@@ -22,7 +22,8 @@ async function readCollection(row, cipher) {
     return row ? {
         id: row.id, alias: row.alias, sourceIds: arrayFromJson(row.source_ids_json),
         prefixEnabled: Boolean(row.prefix_enabled), deduplicate: Boolean(row.deduplicate),
-        defaultTarget: row.default_target, enabled: Boolean(row.enabled),
+        defaultTarget: row.default_target, cacheTtlHours: row.cache_ttl_hours ?? null,
+        enabled: Boolean(row.enabled),
         token: await cipher.decrypt(row.token, tokenAad(row.id)), tokenVersion: row.token_version,
         createdAt: row.created_at, updatedAt: row.updated_at
     } : null;
@@ -98,24 +99,26 @@ function createRepo(store, cipher) {
         async getCollectionByTokenHash(tokenHash) {
             return collection(await store.find('collections', 'token_hash', tokenHash));
         },
-        async createCollection({ alias, sourceIds = [], prefixEnabled = true, deduplicate = true, defaultTarget = 'mihomo', enabled = true }) {
+        async createCollection({ alias, sourceIds = [], prefixEnabled = true, deduplicate = true, defaultTarget = 'mihomo', cacheTtlHours = null, enabled = true }) {
             const id = crypto.randomUUID();
             const now = Date.now();
             const row = {
                 id, alias, source_ids_json: JSON.stringify(sourceIds), prefix_enabled: Number(prefixEnabled),
-                deduplicate: Number(deduplicate), default_target: defaultTarget, enabled: Number(enabled),
+                deduplicate: Number(deduplicate), default_target: defaultTarget, cache_ttl_hours: cacheTtlHours,
+                enabled: Number(enabled),
                 ...await tokenFields(id, cipher), token_version: 1, created_at: now, updated_at: now
             };
             await store.insert('collections', row);
             return collection(row);
         },
-        async updateCollection(id, { alias, sourceIds, prefixEnabled, deduplicate, defaultTarget, enabled }) {
+        async updateCollection(id, { alias, sourceIds, prefixEnabled, deduplicate, defaultTarget, cacheTtlHours, enabled }) {
             const fields = { updated_at: Date.now() };
             if (alias !== undefined) fields.alias = alias;
             if (sourceIds !== undefined) fields.source_ids_json = JSON.stringify(sourceIds);
             if (prefixEnabled !== undefined) fields.prefix_enabled = Number(prefixEnabled);
             if (deduplicate !== undefined) fields.deduplicate = Number(deduplicate);
             if (defaultTarget !== undefined) fields.default_target = defaultTarget;
+            if (cacheTtlHours !== undefined) fields.cache_ttl_hours = cacheTtlHours;
             if (enabled !== undefined) fields.enabled = Number(enabled);
             return collection(await store.update('collections', id, fields));
         },

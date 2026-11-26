@@ -82,6 +82,9 @@ function CollectionsPanel() {
                 <label class="field">默认输出格式
                     <select id="collection-target">{outputTargets.map(value => <option key={value} value={value}>{value}</option>)}</select>
                 </label>
+                <label class="field">缓存时长（小时，0 为每次实时刷新）
+                    <input id="collection-cache-ttl" type="number" min="0" max="168" step="1" value="6" />
+                </label>
             </div>
             <fieldset>
                 <legend>订阅源与合并顺序</legend>

@@ -1,0 +1,1 @@
+ALTER TABLE collections ADD COLUMN cache_ttl_hours INTEGER DEFAULT NULL;

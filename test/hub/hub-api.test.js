@@ -2,6 +2,7 @@ import { applyD1Migrations, createExecutionContext, env, waitOnExecutionContext 
 import yaml from 'js-yaml';
 import { describe, expect, it, vi } from 'vitest';
 import schema from '../../migrations/0001_hub_init.sql?raw';
+import cacheTtlMigration from '../../migrations/0002_collection_cache_ttl.sql?raw';
 import { createApp } from '../../src/app/createApp.jsx';
 import { createFieldCipher, hashPassword } from '../../src/hub/crypto.js';
 import { createD1HubRepo, createMemoryHubRepo } from '../../src/hub/repo.js';
@@ -151,7 +152,9 @@ describe('Hub source and collection APIs', () => {
             expect(await json(api('/sources', 'POST', body), 400)).toMatchObject({ error: { code: 'INVALID_PAYLOAD' } });
         }
         for (const fields of [{ sourceIds: [a.id, a.id] }, { sourceIds: ['unknown'] }, { sourceIds: [1] },
-            { sourceIds: [a.id], defaultTarget: 'unsupported' }, { sourceIds: [a.id], prefixEnabled: 1 }]) {
+            { sourceIds: [a.id], defaultTarget: 'unsupported' }, { sourceIds: [a.id], prefixEnabled: 1 },
+            { sourceIds: [a.id], cacheTtlHours: -1 }, { sourceIds: [a.id], cacheTtlHours: 1.5 },
+            { sourceIds: [a.id], cacheTtlHours: 169 }, { sourceIds: [a.id], cacheTtlHours: '6' }]) {
             expect(await json(api('/collections', 'POST', { alias: 'Invalid', ...fields }), 400))
                 .toMatchObject({ error: { code: 'INVALID_PAYLOAD' } });
         }
@@ -304,9 +307,10 @@ describe('Hub subscription dispatch', () => {
     });
 
     it('runs end-to-end Hub APIs and /sub/:token against D1 with encrypted node cache', async () => {
-        await applyD1Migrations(env.HUB_DB, [{
-            name: '0001_hub_init.sql', queries: schema.split(';').map(q => q.trim()).filter(Boolean)
-        }]);
+        await applyD1Migrations(env.HUB_DB, [
+            { name: '0001_hub_init.sql', queries: schema.split(';').map(q => q.trim()).filter(Boolean) },
+            { name: '0002_collection_cache_ttl.sql', queries: cacheTtlMigration.split(';').map(q => q.trim()).filter(Boolean) }
+        ]);
         await env.HUB_DB.batch(['sessions', 'login_attempts', 'collections', 'sources']
             .map(table => env.HUB_DB.prepare(`DELETE FROM ${table}`)));
 
@@ -344,6 +348,32 @@ describe('Hub subscription dispatch', () => {
         fetchImpl.mockClear();
         const refreshedSub = await app.request(origin + col.subscriptionPath, { headers: { 'User-Agent': 'Clash Verge/2.0' } });
         expect(refreshedSub.status).toBe(200);
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
+    it('honors per-collection cacheTtlHours including live refresh (0) with stale fallback', async () => {
+        const { api, sub, repo, fetchImpl, feeds } = await setup();
+        const a = await createSource(api);
+        const col = await createCollection(api, 'Live', [a.id], { cacheTtlHours: 0 });
+        expect(col.cacheTtlHours).toBe(0);
+
+        fetchImpl.mockClear();
+        feeds.set(feedA, editedYaml);
+        // cacheTtlHours: 0 forces live fetch even though source was just refreshed.
+        expect((await yamlNodes(sub(col.subscriptionPath))).map(n => n.name)).toEqual(['A | Updated']);
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+        // If upstream fails during live refresh (0h), fall back to usable stale cache.
+        feeds.delete(feedA);
+        expect((await yamlNodes(sub(col.subscriptionPath))).map(n => n.name)).toEqual(['A | Updated']);
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+        // Updating to 12 hours uses cache within 12h without hitting upstream.
+        const updated = (await json(api('/collections/' + col.id, 'PUT', { cacheTtlHours: 12 }))).collection;
+        expect(updated.cacheTtlHours).toBe(12);
+        const current = await repo.getSource(a.id);
+        await repo.saveSourceRefreshSuccess(a.id, { nodes: current.nodes, attemptedAt: Date.now() - 2 * 3600_000 });
+        expect((await yamlNodes(sub(col.subscriptionPath))).map(n => n.name)).toEqual(['A | Updated']);
         expect(fetchImpl).toHaveBeenCalledTimes(2);
     });
 });

@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 
 vi.mock('ioredis', () => ({ default: class Redis {} }));
 import schema from '../../migrations/0001_hub_init.sql?raw';
+import cacheTtlMigration from '../../migrations/0002_collection_cache_ttl.sql?raw';
 import { createApp } from '../../src/app/createApp.jsx';
 import { registerHub } from '../../src/hub/index.jsx';
 import { createFieldCipher, constantTimeEqual, hashPassword, randomBase64Url, sha256Hex, verifyPassword } from '../../src/hub/crypto.js';
@@ -19,9 +20,10 @@ import { createVercelRuntime } from '../../src/runtime/vercel.js';
 const password = 'test password';
 const origin = 'https://hub.example';
 const makePassword = () => hashPassword(password, { iterations: 10000 });
-const applySchema = () => applyD1Migrations(env.HUB_DB, [{
-    name: '0001_hub_init.sql', queries: schema.split(';').map(query => query.trim()).filter(Boolean)
-}]);
+const applySchema = () => applyD1Migrations(env.HUB_DB, [
+    { name: '0001_hub_init.sql', queries: schema.split(';').map(query => query.trim()).filter(Boolean) },
+    { name: '0002_collection_cache_ttl.sql', queries: cacheTtlMigration.split(';').map(query => query.trim()).filter(Boolean) }
+]);
 
 function loginRequest(app, credentials, headers = {}) {
     return app.request(origin + '/api/hub/login', {

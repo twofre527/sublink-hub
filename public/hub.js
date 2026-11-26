@@ -280,7 +280,10 @@
                 byId('collection-prefix').checked = collection.prefixEnabled;
                 byId('collection-dedup').checked = collection.deduplicate;
                 byId('collection-target').value = collection.defaultTarget;
+                byId('collection-cache-ttl').value = String(collection.cacheTtlHours !== null && collection.cacheTtlHours !== undefined ? collection.cacheTtlHours : 6);
                 byId('collection-enabled').checked = collection.enabled;
+            } else {
+                byId('collection-cache-ttl').value = '6';
             }
             renderPicker();
             collectionForm.hidden = false;
@@ -294,9 +297,12 @@
                 ['Mihomo', 'mihomo'], ['Mihomo Provider', 'mihomo&mode=provider'],
                 ['Base64', 'base64'], ['Sing-Box', 'singbox'], ['Surge', 'surge']
             ];
+            const cacheLabel = collection.cacheTtlHours === 0
+                ? '实时刷新'
+                : (collection.cacheTtlHours !== null && collection.cacheTtlHours !== undefined ? collection.cacheTtlHours : 6) + ' 小时缓存';
             const children = [
                 el('div', { class: 'item-header' }, [el('h2', {}, collection.alias), badge(collection.enabled ? 'ok' : 'disabled')]),
-                el('p', { class: 'muted' }, collection.sourceIds.length + ' 个订阅源 · ' + collection.mergedNodeCount + ' 个节点 · ' + collection.defaultTarget),
+                el('p', { class: 'muted' }, collection.sourceIds.length + ' 个订阅源 · ' + collection.mergedNodeCount + ' 个节点 · ' + collection.defaultTarget + ' · ' + cacheLabel),
                 el('code', { class: 'url' }, url),
                 el('div', { class: 'actions quick-links' }, formats.map(format => el('a', {
                     href: url + '?target=' + format[1],
@@ -341,12 +347,15 @@
             const id = byId('collection-id').value;
             const saveBtn = byId('collection-save-btn');
             saveBtn.disabled = true;
+            const rawTtl = byId('collection-cache-ttl').value.trim();
+            const cacheTtlHours = rawTtl === '' ? null : Number(rawTtl);
             api(pathFor('collections', id), id ? 'PUT' : 'POST', {
                 alias: byId('collection-alias').value,
                 sourceIds: selected.slice(),
                 prefixEnabled: byId('collection-prefix').checked,
                 deduplicate: byId('collection-dedup').checked,
                 defaultTarget: byId('collection-target').value,
+                cacheTtlHours,
                 enabled: byId('collection-enabled').checked
             }).then(() => {
                 collectionForm.hidden = true;

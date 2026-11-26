@@ -165,6 +165,16 @@ function readCollectionFields(body, sourcesById, creating) {
         patch.sourceIds = ids;
     }
     if (body.defaultTarget !== undefined) patch.defaultTarget = normalizeTarget(body.defaultTarget) ?? 'mihomo';
+    if (body.cacheTtlHours !== undefined) {
+        if (body.cacheTtlHours === null || body.cacheTtlHours === '') {
+            patch.cacheTtlHours = null;
+        } else if (typeof body.cacheTtlHours !== 'number' || !Number.isInteger(body.cacheTtlHours) ||
+            body.cacheTtlHours < 0 || body.cacheTtlHours > 168) {
+            throw new InvalidPayloadError('cacheTtlHours must be an integer between 0 and 168');
+        } else {
+            patch.cacheTtlHours = body.cacheTtlHours;
+        }
+    }
     return patch;
 }
 
@@ -194,9 +204,13 @@ function mergeCollection(collection, sourcesById, { maxStaleMs, now }) {
 
 function computeCollectionView(collection, sourcesById, cache) {
     const { nodes, warnings } = mergeCollection(collection, sourcesById, cache);
-    const { id, alias, sourceIds, prefixEnabled, deduplicate, defaultTarget, enabled, tokenVersion, token, createdAt, updatedAt } = collection;
+    const {
+        id, alias, sourceIds, prefixEnabled, deduplicate, defaultTarget, cacheTtlHours,
+        enabled, tokenVersion, token, createdAt, updatedAt
+    } = collection;
     return {
-        id, alias, sourceIds, prefixEnabled, deduplicate, defaultTarget, enabled, tokenVersion,
+        id, alias, sourceIds, prefixEnabled, deduplicate, defaultTarget, cacheTtlHours: cacheTtlHours ?? null,
+        enabled, tokenVersion,
         subscriptionPath: '/sub/' + token, mergedNodeCount: nodes.length, warnings, createdAt, updatedAt
     };
 }

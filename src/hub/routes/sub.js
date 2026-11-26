@@ -39,7 +39,9 @@ export function mountSubRoutes(app, { refresher } = {}) {
             throw error;
         }
 
-        const cacheTtlMs = (config?.cacheTtlSeconds ?? 21600) * 1000;
+        const cacheTtlMs = (collection.cacheTtlHours !== null && collection.cacheTtlHours !== undefined
+            ? collection.cacheTtlHours * 3600
+            : (config?.cacheTtlSeconds ?? 21600)) * 1000;
         const maxStaleMs = (config?.maxStaleSeconds ?? 604800) * 1000;
         const sourceRefresher = getRefresher(hub);
         const resolved = await Promise.all(collection.sourceIds.map(async id => {
@@ -49,10 +51,10 @@ export function mountSubRoutes(app, { refresher } = {}) {
             const hasNodes = Array.isArray(source.nodes) && source.nodes.length > 0;
             const now = Date.now();
             const age = source.lastSuccessAt ? now - source.lastSuccessAt : Infinity;
-            if (hasNodes && age <= cacheTtlMs) {
+            if (cacheTtlMs > 0 && hasNodes && age <= cacheTtlMs) {
                 return toEntry(source);
             }
-            if (hasNodes && age <= maxStaleMs) {
+            if (cacheTtlMs > 0 && hasNodes && age <= maxStaleMs) {
                 const background = sourceRefresher.refreshSource(source.id).catch(() => {});
                 try {
                     c.executionCtx?.waitUntil?.(background);
@@ -62,7 +64,10 @@ export function mountSubRoutes(app, { refresher } = {}) {
                 return toEntry(source);
             }
             const result = await sourceRefresher.refreshSource(source.id, { now });
-            return result.ok && result.source?.nodes?.length ? toEntry(result.source) : null;
+            if (result.ok && result.source?.nodes?.length) return toEntry(result.source);
+            // When cacheTtlMs is 0 (live refresh) and upstream fails, fall back to usable stale cache.
+            if (hasNodes && age <= maxStaleMs) return toEntry(source);
+            return null;
         }));
         const entries = resolved.filter(Boolean);
 
