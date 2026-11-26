@@ -92,4 +92,44 @@ describe('Hub management UI', () => {
     it('uses DOM construction for subscription data', () => {
         expect(script).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML/);
     });
+
+    it('renders login and admin pages in en-US when hub_lang=en-US cookie is set', async () => {
+        const loginHtml = await expectSecurePage(await makeApp().request('/login', {
+            headers: { Cookie: 'hub_lang=en-US' }
+        }));
+        expect(loginHtml).toContain('<html lang="en-US">');
+        expect(loginHtml).toContain('Admin Login');
+        expect(loginHtml).toContain('ADMIN_PASSWORD_HASH or HUB_DB is not configured. Login is unavailable.');
+        expect(loginHtml).toMatch(/<button[^>]*\bdisabled\b[^>]*>Login<\/button>/);
+        expect(loginHtml).toContain('data-next-lang="zh-CN"');
+
+        const adminHtml = await expectSecurePage(await configuredApp().request('/admin', {
+            headers: { Cookie: 'hub_session=ui-session; hub_lang=en-US' }
+        }));
+        expect(adminHtml).toContain('<html lang="en-US">');
+        expect(adminHtml).toContain('>Sources<');
+        expect(adminHtml).toContain('>Collections<');
+        expect(adminHtml).toContain('>Converter<');
+        expect(adminHtml).toContain('>Logout<');
+        expect(adminHtml).toContain('data-next-lang="zh-CN"');
+    });
+
+    it('renders login and admin pages in zh-CN when hub_lang=zh-CN cookie is set', async () => {
+        const loginHtml = await expectSecurePage(await makeApp().request('/login', {
+            headers: { Cookie: 'hub_lang=zh-CN' }
+        }));
+        expect(loginHtml).toContain('<html lang="zh-CN">');
+        expect(loginHtml).toContain('管理员登录');
+        expect(loginHtml).toContain('data-next-lang="en-US"');
+
+        const adminHtml = await expectSecurePage(await configuredApp().request('/admin', {
+            headers: { Cookie: 'hub_session=ui-session; hub_lang=zh-CN' }
+        }));
+        expect(adminHtml).toContain('<html lang="zh-CN">');
+        expect(adminHtml).toContain('>订阅源<');
+        expect(adminHtml).toContain('>组合列表<');
+        expect(adminHtml).toContain('>单次转换<');
+        expect(adminHtml).toContain('>退出登录<');
+        expect(adminHtml).toContain('data-next-lang="en-US"');
+    });
 });

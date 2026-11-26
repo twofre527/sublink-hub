@@ -2,16 +2,16 @@ import { html } from 'hono/html'
 import { APP_KEYWORDS } from '../constants.js';
 
 export const Layout = (props) => {
-  const { title, children } = props
+  const { title, description, keywords, lang = 'zh-CN', children } = props
   return html`
     <!DOCTYPE html>
-    <html lang="en" x-data="appData()">
+    <html lang="${lang}" x-data="appData()">
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>${title}</title>
-        <meta name="description" content="Convert and optimize your subscription links easily" />
-        <meta name="keywords" content="${APP_KEYWORDS}" />
+        <meta name="description" content="${description || 'Convert and optimize your subscription links easily'}" />
+        <meta name="keywords" content="${keywords || APP_KEYWORDS}" />
         <link rel="icon" type="image/x-icon" href="/favicon.ico" />
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
         <script src="https://cdn.tailwindcss.com"></script>
@@ -129,6 +129,17 @@ export const Layout = (props) => {
                 if (this.darkMode) {
                   document.documentElement.classList.add('dark');
                 }
+              },
+              switchLanguage(nextLang) {
+                document.cookie = 'hub_lang=' + nextLang + '; Path=/; SameSite=Lax; Max-Age=31536000';
+                // Strip ?lang= so the newly persisted cookie takes precedence on reload.
+                const url = new URL(window.location.href);
+                if (url.searchParams.has('lang')) {
+                  url.searchParams.delete('lang');
+                  window.location.href = url.toString();
+                } else {
+                  window.location.reload();
+                }
               }
             }
           }
@@ -209,7 +220,7 @@ export const Layout = (props) => {
 
           // i18n helper for update checker
           function getUpdateI18n(key) {
-            const lang = navigator.language || 'en-US';
+            const lang = document.documentElement.lang || navigator.language || 'en-US';
             const translations = {
               'zh-CN': {
                 newVersionAvailable: '发现新版本',

@@ -23,7 +23,39 @@ describe('Worker', () => {
         expect(res.status).toBe(200);
         expect(res.headers.get('content-type')).toContain('text/html');
         const text = await res.text();
-        expect(text).toContain('Sublink Worker');
+        expect(text).toContain('Sublink Hub');
+    });
+
+    it('GET / respects hub_lang cookie and ?lang= query parameter', async () => {
+        const app = createTestApp();
+
+        const enRes = await app.request('http://localhost/', {
+            headers: { Cookie: 'hub_lang=en-US' }
+        });
+        expect(enRes.status).toBe(200);
+        const enHtml = await enRes.text();
+        expect(enHtml).toContain('<html lang="en-US"');
+        expect(enHtml).toContain('Subscription Link Converter');
+        expect(enHtml).toContain('switchLanguage(&#39;zh-CN&#39;)');
+        expect(enHtml).toContain('>中文</button>');
+
+        const zhRes = await app.request('http://localhost/', {
+            headers: { Cookie: 'hub_lang=zh-CN' }
+        });
+        expect(zhRes.status).toBe(200);
+        const zhHtml = await zhRes.text();
+        expect(zhHtml).toContain('<html lang="zh-CN"');
+        expect(zhHtml).toContain('订阅链接转换工具');
+        expect(zhHtml).toContain('switchLanguage(&#39;en-US&#39;)');
+        expect(zhHtml).toContain('>EN</button>');
+
+        const overrideRes = await app.request('http://localhost/?lang=en-US', {
+            headers: { Cookie: 'hub_lang=zh-CN' }
+        });
+        expect(overrideRes.status).toBe(200);
+        const overrideHtml = await overrideRes.text();
+        expect(overrideHtml).toContain('<html lang="en-US"');
+        expect(overrideHtml).toContain('Subscription Link Converter');
     });
 
     it('GET /singbox returns JSON', async () => {

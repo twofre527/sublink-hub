@@ -3,6 +3,111 @@
 
     const byId = id => document.getElementById(id);
     const pathFor = (group, id) => '/' + group + (id ? '/' + encodeURIComponent(id) : '');
+    const lang = document.documentElement.lang === 'en-US' ? 'en-US' : 'zh-CN';
+
+    const i18n = {
+        'zh-CN': {
+            requestFailed: status => '请求失败（' + status + '）',
+            lightMode: '浅色模式',
+            darkMode: '深色模式',
+            invalidCredentials: '密码有误，请重试。',
+            statusNames: { ok: '正常', pending: '待刷新', error: '异常', disabled: '已停用' },
+            previewTitleSuffix: ' · 节点预览',
+            previewSummary: result => '共 ' + result.nodeCount + ' 个节点' + (
+                result.dedupedCount === undefined
+                    ? ' · 解析丢弃 ' + result.droppedCount + ' 个'
+                    : ' · 合并前 ' + result.totalBeforeDedup + ' 个 · 去重 ' + result.dedupedCount + ' 个'
+            ),
+            tlsOn: '启用',
+            tlsOff: '关闭',
+            neverSucceeded: '尚未成功',
+            nodeCount: count => count + ' 个节点',
+            droppedCount: count => '丢弃 ' + count,
+            lastSuccess: time => '最近成功: ' + time,
+            edit: '编辑',
+            refresh: '刷新',
+            previewNodes: '预览节点',
+            delete: '删除',
+            noSources: '暂无订阅源。',
+            refreshStale: warning => '刷新失败，已保留缓存节点：' + warning,
+            sourceRefreshed: '订阅源已刷新。',
+            sourceDeleted: '订阅源已删除。',
+            sourceInUse: aliases => '请先从以下组合移除此订阅源：' + aliases.join('、'),
+            sourceSavedWithWarning: err => '订阅源已保存，首次刷新失败：' + err,
+            sourceSaved: '订阅源已保存。',
+            moveUp: alias => '上移 ' + alias,
+            moveDown: alias => '下移 ' + alias,
+            addSourceFirst: '请先添加订阅源。',
+            realtimeCache: '实时刷新',
+            hoursCache: hours => hours + ' 小时缓存',
+            collectionMeta: (sourceCount, nodeCount, target, cacheLabel) =>
+                sourceCount + ' 个订阅源 · ' + nodeCount + ' 个节点 · ' + target + ' · ' + cacheLabel,
+            disable: '停用',
+            enable: '启用',
+            collectionStatusUpdated: '组合状态已更新。',
+            copyUrl: '复制链接',
+            clipboardUnavailable: '当前环境不支持自动复制，请手动复制上方链接。',
+            urlCopied: '链接已复制。',
+            rotateToken: '重置链接',
+            confirmRotateToken: '重置链接后旧链接将立即失效，确认继续？',
+            newUrlGenerated: '新链接已生成。',
+            confirmDeleteCollection: '确认删除此组合？',
+            collectionDeleted: '组合已删除。',
+            noCollections: '暂无组合。',
+            collectionSaved: '组合已保存。'
+        },
+        'en-US': {
+            requestFailed: status => 'Request failed (' + status + ')',
+            lightMode: 'Light',
+            darkMode: 'Dark',
+            invalidCredentials: 'Invalid password. Please try again.',
+            statusNames: { ok: 'OK', pending: 'Pending', error: 'Error', disabled: 'Disabled' },
+            previewTitleSuffix: ' · Node Preview',
+            previewSummary: result => result.nodeCount + ' nodes' + (
+                result.dedupedCount === undefined
+                    ? ' · ' + result.droppedCount + ' dropped'
+                    : ' · ' + result.totalBeforeDedup + ' before dedup · ' + result.dedupedCount + ' deduped'
+            ),
+            tlsOn: 'On',
+            tlsOff: 'Off',
+            neverSucceeded: 'Never',
+            nodeCount: count => count + ' nodes',
+            droppedCount: count => count + ' dropped',
+            lastSuccess: time => 'Last success: ' + time,
+            edit: 'Edit',
+            refresh: 'Refresh',
+            previewNodes: 'Preview',
+            delete: 'Delete',
+            noSources: 'No sources yet.',
+            refreshStale: warning => 'Refresh failed, retained cached nodes: ' + warning,
+            sourceRefreshed: 'Source refreshed.',
+            sourceDeleted: 'Source deleted.',
+            sourceInUse: aliases => 'Remove this source from the following collections first: ' + aliases.join(', '),
+            sourceSavedWithWarning: err => 'Source saved, initial refresh failed: ' + err,
+            sourceSaved: 'Source saved.',
+            moveUp: alias => 'Move up ' + alias,
+            moveDown: alias => 'Move down ' + alias,
+            addSourceFirst: 'Please add a source first.',
+            realtimeCache: 'Real-time',
+            hoursCache: hours => hours + 'h cache',
+            collectionMeta: (sourceCount, nodeCount, target, cacheLabel) =>
+                sourceCount + ' sources · ' + nodeCount + ' nodes · ' + target + ' · ' + cacheLabel,
+            disable: 'Disable',
+            enable: 'Enable',
+            collectionStatusUpdated: 'Collection status updated.',
+            copyUrl: 'Copy URL',
+            clipboardUnavailable: 'Clipboard unavailable. Please copy the URL above manually.',
+            urlCopied: 'URL copied.',
+            rotateToken: 'Rotate Token',
+            confirmRotateToken: 'Rotating the token will invalidate the old URL immediately. Continue?',
+            newUrlGenerated: 'New URL generated.',
+            confirmDeleteCollection: 'Delete this collection?',
+            collectionDeleted: 'Collection deleted.',
+            noCollections: 'No collections yet.',
+            collectionSaved: 'Collection saved.'
+        }
+    };
+    const t = i18n[lang];
 
     function el(tag, attrs, children) {
         const element = document.createElement(tag);
@@ -28,7 +133,7 @@
             if (response.status === 401 && location.pathname !== '/login') location.replace('/login');
             return response.json().catch(() => ({})).then(data => {
                 if (response.ok) return data;
-                const error = new Error(data.error ? data.error.message : '请求失败（' + response.status + '）');
+                const error = new Error(data.error ? data.error.message : t.requestFailed(response.status));
                 error.status = response.status;
                 error.code = data.error && data.error.code;
                 error.data = data;
@@ -56,17 +161,38 @@
         const toggle = byId('theme-toggle');
         const current = () => root.dataset.theme || (system.matches ? 'dark' : 'light');
         const update = () => {
-            if (toggle) toggle.setAttribute('aria-pressed', String(current() === 'dark'));
+            if (!toggle) return;
+            const isDark = current() === 'dark';
+            toggle.setAttribute('aria-pressed', String(isDark));
+            toggle.textContent = isDark ? t.lightMode : t.darkMode;
         };
-        const saved = localStorage.getItem('hub_theme');
+        const saved = localStorage.getItem('theme') || localStorage.getItem('hub_theme');
         if (saved === 'dark' || saved === 'light') root.dataset.theme = saved;
         if (toggle) toggle.addEventListener('click', () => {
             root.dataset.theme = current() === 'dark' ? 'light' : 'dark';
-            localStorage.setItem('hub_theme', root.dataset.theme);
+            localStorage.setItem('theme', root.dataset.theme);
+            localStorage.removeItem('hub_theme');
             update();
         });
         system.addEventListener('change', update);
         update();
+    }
+
+    function initLangToggle() {
+        const toggle = byId('lang-toggle');
+        if (!toggle) return;
+        toggle.addEventListener('click', () => {
+            const nextLang = toggle.dataset.nextLang || (lang === 'en-US' ? 'zh-CN' : 'en-US');
+            document.cookie = 'hub_lang=' + nextLang + '; Path=/; SameSite=Lax; Max-Age=31536000';
+            // Strip ?lang= so the newly persisted cookie takes precedence on reload.
+            const url = new URL(location.href);
+            if (url.searchParams.has('lang')) {
+                url.searchParams.delete('lang');
+                location.replace(url.toString());
+            } else {
+                location.reload();
+            }
+        });
     }
 
     function initLogin() {
@@ -77,7 +203,7 @@
                 password: byId('password').value,
                 rememberMe: byId('remember-me').checked
             }).then(() => location.replace('/admin')).catch(error => notice(
-                byId('login-error'), error.code === 'INVALID_CREDENTIALS' ? '密码有误，请重试。' : error.message, 'error'
+                byId('login-error'), error.code === 'INVALID_CREDENTIALS' ? t.invalidCredentials : error.message, 'error'
             ));
         });
     }
@@ -86,8 +212,7 @@
         container.replaceChildren(...(cards.length ? cards : [el('p', { class: 'muted' }, emptyText)]));
     }
 
-    const statusNames = { ok: '正常', pending: '待刷新', error: '异常', disabled: '已停用' };
-    const badge = status => el('span', { class: 'badge ' + status }, statusNames[status]);
+    const badge = status => el('span', { class: 'badge ' + status }, t.statusNames[status]);
     const actionRow = actions => el('div', { class: 'actions' }, actions);
     const warningsList = warnings => el('ul', { class: 'notice warning' }, warnings.map(text => el('li', {}, text)));
 
@@ -112,17 +237,13 @@
         function preview(path) {
             api(path + '/nodes').then(result => {
                 const warnings = result.warnings || result.diagnostics || [];
-                byId('preview-title').textContent = result.alias + ' · 节点预览';
-                byId('preview-summary').textContent = '共 ' + result.nodeCount + ' 个节点' + (
-                    result.dedupedCount === undefined
-                        ? ' · 解析丢弃 ' + result.droppedCount + ' 个'
-                        : ' · 合并前 ' + result.totalBeforeDedup + ' 个 · 去重 ' + result.dedupedCount + ' 个'
-                );
+                byId('preview-title').textContent = result.alias + t.previewTitleSuffix;
+                byId('preview-summary').textContent = t.previewSummary(result);
                 byId('preview-warnings').replaceChildren(...warnings.map(text => el('li', {}, text)));
                 byId('preview-warnings').hidden = warnings.length === 0;
                 byId('preview-table-body').replaceChildren(...result.nodes.map(node => {
                     const server = node.server.indexOf(':') !== -1 && !node.server.startsWith('[') ? '[' + node.server + ']' : node.server;
-                    const fields = [node.tag, node.type, server + ':' + node.port, node.tls ? '启用' : '关闭', node.transport];
+                    const fields = [node.tag, node.type, server + ':' + node.port, node.tls ? t.tlsOn : t.tlsOff, node.transport];
                     return el('tr', {}, fields.map(value => el('td', {}, value)));
                 }));
                 modal.hidden = false;
@@ -145,17 +266,17 @@
         }
 
         function formatTime(ms) {
-            return ms ? new Date(ms).toLocaleString() : '尚未成功';
+            return ms ? new Date(ms).toLocaleString(lang) : t.neverSucceeded;
         }
 
         function renderSources() {
             fillList(byId('sources-list'), sources.map(source => {
                 const path = pathFor('sources', source.id);
                 const meta = [
-                    source.nodeCount + ' 个节点',
-                    source.droppedCount > 0 ? '丢弃 ' + source.droppedCount : null,
+                    t.nodeCount(source.nodeCount),
+                    source.droppedCount > 0 ? t.droppedCount(source.droppedCount) : null,
                     source.inputFormat,
-                    '最近成功: ' + formatTime(source.lastSuccessAt)
+                    t.lastSuccess(formatTime(source.lastSuccessAt))
                 ].filter(Boolean).join(' · ');
                 const children = [
                     el('div', { class: 'item-header' }, [el('h2', {}, source.alias), badge(source.enabled ? source.status : 'disabled')]),
@@ -164,13 +285,13 @@
                 ];
                 if (source.lastError) children.push(el('p', { class: 'notice error' }, source.lastError));
                 children.push(actionRow([
-                    button('编辑', () => openSource(source)),
-                    button('刷新', () => refreshSource(path)),
-                    button('预览节点', () => preview(path)),
-                    button('删除', () => removeSource(path), 'danger')
+                    button(t.edit, () => openSource(source)),
+                    button(t.refresh, () => refreshSource(path)),
+                    button(t.previewNodes, () => preview(path)),
+                    button(t.delete, () => removeSource(path), 'danger')
                 ]));
                 return el('article', { class: 'card item' }, children);
-            }), '暂无订阅源。');
+            }), t.noSources);
         }
 
         function loadSources() {
@@ -192,8 +313,8 @@
             };
             api(path + '/refresh', 'POST').then(result => {
                 update(result.source);
-                if (result.staleRetained) show('刷新失败，已保留缓存节点：' + result.warning, 'warning');
-                else show('订阅源已刷新。');
+                if (result.staleRetained) show(t.refreshStale(result.warning), 'warning');
+                else show(t.sourceRefreshed);
             }).catch(error => {
                 if (error.status === 502 && error.data.source) update(error.data.source);
                 fail(error);
@@ -201,9 +322,9 @@
         }
 
         function removeSource(path) {
-            api(path, 'DELETE').then(loadSources).then(() => show('订阅源已删除。')).catch(error => {
+            api(path, 'DELETE').then(loadSources).then(() => show(t.sourceDeleted)).catch(error => {
                 if (error.status === 409 && error.code === 'SOURCE_IN_USE') {
-                    show('请先从以下组合移除此订阅源：' + error.data.collections.map(collection => collection.alias).join('、'), 'error');
+                    show(t.sourceInUse(error.data.collections.map(collection => collection.alias)), 'error');
                 } else fail(error);
             });
         }
@@ -224,8 +345,8 @@
             api(pathFor('sources', id), id ? 'PUT' : 'POST', payload).then(result => {
                 sourceForm.hidden = true;
                 return loadSources().then(() => {
-                    if (!id && result.source.status === 'error') show('订阅源已保存，首次刷新失败：' + result.source.lastError, 'warning');
-                    else show('订阅源已保存。');
+                    if (!id && result.source.status === 'error') show(t.sourceSavedWithWarning(result.source.lastError), 'warning');
+                    else show(t.sourceSaved);
                 });
             }).catch(fail).finally(() => { saveBtn.disabled = false; });
         }
@@ -256,8 +377,8 @@
                     const down = button('↓', () => move(1));
                     up.disabled = index === 0;
                     down.disabled = index === selected.length - 1;
-                    up.setAttribute('aria-label', '上移 ' + source.alias);
-                    down.setAttribute('aria-label', '下移 ' + source.alias);
+                    up.setAttribute('aria-label', t.moveUp(source.alias));
+                    down.setAttribute('aria-label', t.moveDown(source.alias));
                     controls.push(up, down);
                     children.push(actionRow([up, down]));
                 }
@@ -267,7 +388,7 @@
                 }
                 return el('div', { class: 'picker-row' }, children);
             }).filter(Boolean);
-            fillList(byId('collection-sources-picker'), rows, '请先添加订阅源。');
+            fillList(byId('collection-sources-picker'), rows, t.addSourceFirst);
             if (focus) focus.focus();
         }
 
@@ -298,11 +419,11 @@
                 ['Base64', 'base64'], ['Sing-Box', 'singbox'], ['Surge', 'surge']
             ];
             const cacheLabel = collection.cacheTtlHours === 0
-                ? '实时刷新'
-                : (collection.cacheTtlHours !== null && collection.cacheTtlHours !== undefined ? collection.cacheTtlHours : 6) + ' 小时缓存';
+                ? t.realtimeCache
+                : t.hoursCache(collection.cacheTtlHours !== null && collection.cacheTtlHours !== undefined ? collection.cacheTtlHours : 6);
             const children = [
                 el('div', { class: 'item-header' }, [el('h2', {}, collection.alias), badge(collection.enabled ? 'ok' : 'disabled')]),
-                el('p', { class: 'muted' }, collection.sourceIds.length + ' 个订阅源 · ' + collection.mergedNodeCount + ' 个节点 · ' + collection.defaultTarget + ' · ' + cacheLabel),
+                el('p', { class: 'muted' }, t.collectionMeta(collection.sourceIds.length, collection.mergedNodeCount, collection.defaultTarget, cacheLabel)),
                 el('code', { class: 'url' }, url),
                 el('div', { class: 'actions quick-links' }, formats.map(format => el('a', {
                     href: url + '?target=' + format[1],
@@ -312,21 +433,21 @@
             ];
             if (collection.warnings.length) children.push(warningsList(collection.warnings));
             children.push(actionRow([
-                button('编辑', () => openCollection(collection)),
-                button(collection.enabled ? '停用' : '启用', () => changeCollection(path, 'PUT', '组合状态已更新。', { enabled: !collection.enabled })),
-                button('复制链接', () => {
+                button(t.edit, () => openCollection(collection)),
+                button(collection.enabled ? t.disable : t.enable, () => changeCollection(path, 'PUT', t.collectionStatusUpdated, { enabled: !collection.enabled })),
+                button(t.copyUrl, () => {
                     if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
-                        show('当前环境不支持自动复制，请手动复制上方链接。', 'warning');
+                        show(t.clipboardUnavailable, 'warning');
                         return;
                     }
-                    navigator.clipboard.writeText(url).then(() => show('链接已复制。')).catch(fail);
+                    navigator.clipboard.writeText(url).then(() => show(t.urlCopied)).catch(fail);
                 }),
-                button('预览节点', () => preview(path)),
-                button('重置链接', () => {
-                    if (window.confirm('重置链接后旧链接将立即失效，确认继续？')) changeCollection(path + '/rotate-token', 'POST', '新链接已生成。');
+                button(t.previewNodes, () => preview(path)),
+                button(t.rotateToken, () => {
+                    if (window.confirm(t.confirmRotateToken)) changeCollection(path + '/rotate-token', 'POST', t.newUrlGenerated);
                 }),
-                button('删除', () => {
-                    if (window.confirm('确认删除此组合？')) changeCollection(path, 'DELETE', '组合已删除。');
+                button(t.delete, () => {
+                    if (window.confirm(t.confirmDeleteCollection)) changeCollection(path, 'DELETE', t.collectionDeleted);
                 }, 'danger')
             ]));
             return el('article', { class: 'card item' }, children);
@@ -334,7 +455,7 @@
 
         function loadCollections() {
             return api('/collections').then(result => fillList(
-                byId('collections-list'), result.collections.map(collectionCard), '暂无组合。'
+                byId('collections-list'), result.collections.map(collectionCard), t.noCollections
             ));
         }
 
@@ -360,7 +481,7 @@
             }).then(() => {
                 collectionForm.hidden = true;
                 return loadCollections();
-            }).then(() => show('组合已保存。')).catch(fail).finally(() => { saveBtn.disabled = false; });
+            }).then(() => show(t.collectionSaved)).catch(fail).finally(() => { saveBtn.disabled = false; });
         }
 
         byId('tab-sources').addEventListener('click', () => switchTab('sources'));
@@ -378,6 +499,7 @@
     }
 
     initTheme();
+    initLangToggle();
     if (document.body.dataset.page === 'login') initLogin();
     else if (document.body.dataset.page === 'admin') initAdmin();
 }());

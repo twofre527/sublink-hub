@@ -2,7 +2,12 @@
 /** @jsxImportSource hono/jsx */
 import { APP_NAME, GITHUB_REPO, DOCS_URL } from '../constants.js';
 
-export const Navbar = () => {
+export const Navbar = ({ lang = 'zh-CN' } = {}) => {
+    const isEnglish = lang.startsWith('en');
+    const nextLang = isEnglish ? 'zh-CN' : 'en-US';
+    const langLabel = isEnglish ? '中文' : 'EN';
+    const langAria = isEnglish ? 'Switch to Chinese' : '切换到英文';
+
     return (
         <nav class="fixed top-0 w-full bg-white/80 dark:bg-gray-900/80 backdrop-blur-md shadow-sm border-b border-gray-200 dark:border-gray-800 z-50 transition-all duration-300">
             <div class="container mx-auto px-4">
@@ -12,6 +17,13 @@ export const Navbar = () => {
                         <span>{APP_NAME}</span>
                     </a>
                     <div class="flex items-center gap-3">
+                        <a
+                            href="/admin"
+                            class="px-4 py-2 text-gray-700 dark:text-gray-300 text-sm font-medium rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex items-center gap-2"
+                        >
+                            <i class="fas fa-layer-group"></i>
+                            <span>Hub</span>
+                        </a>
                         <a
                             href={DOCS_URL}
                             target="_blank"
@@ -30,6 +42,15 @@ export const Navbar = () => {
                             <i class="fab fa-github"></i>
                             <span>GitHub</span>
                         </a>
+                        <button
+                            type="button"
+                            class="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800 transition-colors"
+                            x-on:click={`switchLanguage('${nextLang}')`}
+                            aria-label={langAria}
+                            title={langAria}
+                        >
+                            {langLabel}
+                        </button>
                         <button
                             class="p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800 transition-colors"
                             x-on:click="toggleDarkMode()"
