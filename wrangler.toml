@@ -8,5 +8,11 @@ kv_namespaces = [
   { binding = "SUBLINK_KV", id = "8943789ed0af49659f887fc740d11240" }
 ]
 
+[[d1_databases]]
+binding = "HUB_DB"
+database_name = "sublink-hub"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
 [assets]
 directory = "./public"
