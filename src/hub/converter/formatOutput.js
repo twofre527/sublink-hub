@@ -6,6 +6,7 @@ import { InvalidConfigError, InvalidPayloadError } from '../../services/errors.j
 import { encodeNodesToBase64Uri } from './toShareUri.js';
 
 export const VALID_TARGETS = ['mihomo', 'base64', 'singbox', 'surge'];
+const SUPPORTED_MIHOMO_TYPES = new Set(['shadowsocks', 'vmess', 'vless', 'trojan', 'hysteria2', 'tuic', 'anytls']);
 
 const TARGET_ALIASES = new Map([
     ['clash', 'mihomo'], ['clash-meta', 'mihomo'],
@@ -14,10 +15,10 @@ const TARGET_ALIASES = new Map([
 ]);
 
 const CLIENT_TARGETS = [
-    ['mihomo', /\b(?:clash-verge|clash\.meta|mihomo|stash|clash)\b/i],
-    ['singbox', /\b(?:sing-box\b|sf[aimt]\/|hiddify\b)/i],
+    ['mihomo', /\b(?:clash[\s._/-]?verge|clash\.meta|clashx|clashfor\w+|mihomo|stash|clash)\b/i],
+    ['singbox', /\b(?:sing-box\b|sf[aimt]\/|hiddify)/i],
     ['surge', /\bsurge\b/i],
-    ['base64', /\b(?:shadowrocket|v2rayn|v2rayng|nekobox|nekoray|quantumult|loon|karing|xray|v2box|streisand)\b/i]
+    ['base64', /\b(?:shadowrocket|v2rayng?|nekobox|nekoray|quantumult|loon|karing|xray|v2box|streisand)/i]
 ];
 
 export function normalizeTarget(raw) {
@@ -73,7 +74,9 @@ export function formatSubscriptionOutput(nodes, { target = 'mihomo', mode = '', 
 
     let body, contentType, result;
     if (target === 'mihomo') {
-        result = convertNodes(nodes, target, ClashConfigBuilder.prototype.convertProxy);
+        result = convertNodes(nodes, target, node =>
+            SUPPORTED_MIHOMO_TYPES.has(node?.type) ? ClashConfigBuilder.prototype.convertProxy(node) : null
+        );
         const config = { proxies: result.converted };
         if (mode !== 'provider') {
             config['proxy-groups'] = [{ name: 'PROXY', type: 'select', 'include-all': true }];

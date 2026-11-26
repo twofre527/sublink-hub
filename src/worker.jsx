@@ -1,14 +1,16 @@
+/** @jsxRuntime automatic */
+/** @jsxImportSource hono/jsx */
 import { createApp } from './app/createApp.jsx';
 import { createCloudflareRuntime } from './runtime/cloudflare.js';
 
-let honoApp;
+const apps = new WeakMap();
 
 function getApp(env) {
-    if (!honoApp) {
-        const runtime = createCloudflareRuntime(env);
-        honoApp = createApp(runtime);
+    if (!env || typeof env !== 'object') {
+        return createApp(createCloudflareRuntime(env));
     }
-    return honoApp;
+    if (!apps.has(env)) apps.set(env, createApp(createCloudflareRuntime(env)));
+    return apps.get(env);
 }
 
 export default {

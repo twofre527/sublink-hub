@@ -317,10 +317,11 @@ describe('share URI output', () => {
 describe('output formats', () => {
     const anytls = { tag: 'AnyTLS', type: 'anytls', server, server_port: 443, password: 'example-password' };
     it.each([
-        ['Clash Verge', 'mihomo'], ['Clash-Verge/2.1.0', 'mihomo'], ['Clash.Meta/1.2', 'mihomo'],
+        ['Clash Verge', 'mihomo'], ['Clash-Verge/2.1.0', 'mihomo'], ['ClashVerge/1.7.7', 'mihomo'],
+        ['ClashForAndroid/2.5.12', 'mihomo'], ['ClashX/1.9', 'mihomo'], ['Clash.Meta/1.2', 'mihomo'],
         ['Mihomo/1.1', 'mihomo'], ['Stash/1.1', 'mihomo'], ['Shadowrocket/2.0', 'base64'], ['v2rayN/7.0', 'base64'],
-        ['Sing-Box/1.14', 'singbox'], ['SFI/1.0', 'singbox'], ['SFA/1.0', 'singbox'],
-        ['SFM/1.0', 'singbox'], ['SFT/1.0', 'singbox'], ['Hiddify/1.0', 'singbox'],
+        ['QuantumultX/1.4', 'base64'], ['Sing-Box/1.14', 'singbox'], ['SFI/1.0', 'singbox'], ['SFA/1.0', 'singbox'],
+        ['SFM/1.0', 'singbox'], ['SFT/1.0', 'singbox'], ['Hiddify/1.0', 'singbox'], ['HiddifyNext/2.0', 'singbox'],
         ['Surge/5.0', 'surge'], ['Mozilla/5.0 Firefox/100.0', null]
     ])('detects the UA %s', (ua, target) => {
         expect(detectClientTarget(ua)).toBe(target);
@@ -341,10 +342,12 @@ describe('output formats', () => {
     });
 
     it('emits Mihomo provider and standalone YAML with only the intended sections', () => {
-        const full = formatSubscriptionOutput([ss]);
+        const unknown = { tag: 'Unknown', type: 'wireguard', server, server_port: 51820 };
+        const full = formatSubscriptionOutput([ss, unknown]);
         const proxies = [{ name: 'Node', type: 'ss', server, port: 443, cipher: ss.method, password: ss.password, udp: true }];
         expect(full).toMatchObject({
-            target: 'mihomo', contentType: 'text/yaml; charset=utf-8', convertedCount: 1, skippedCount: 0, warnings: []
+            target: 'mihomo', contentType: 'text/yaml; charset=utf-8', convertedCount: 1, skippedCount: 1,
+            warnings: ['Node 2: unsupported by mihomo']
         });
         expect(yaml.load(full.body)).toEqual({
             proxies, 'proxy-groups': [{ name: 'PROXY', type: 'select', 'include-all': true }], rules: ['MATCH,PROXY']
