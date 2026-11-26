@@ -184,3 +184,5 @@ AGENTS.local.md
 
 # Local upstream source references
 .upstreams/
+
+node_modules

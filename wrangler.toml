@@ -1,5 +1,5 @@
 #:schema node_modules/wrangler/config-schema.json
-name = "sublink-worker"
+name = "sublink-hub"
 main = "src/worker.jsx"
 compatibility_date = "2024-07-24"
 compatibility_flags = ["nodejs_compat"]
@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "HUB_DB"
 database_name = "sublink-hub"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "fc1d46a4-420e-4e8d-81e0-f67cb8ad84b6"
 migrations_dir = "migrations"
 
 [assets]
