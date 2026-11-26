@@ -1,9 +1,10 @@
-import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
+import { applyD1Migrations, createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
 import yaml from 'js-yaml';
 import { describe, expect, it, vi } from 'vitest';
+import schema from '../../migrations/0001_hub_init.sql?raw';
 import { createApp } from '../../src/app/createApp.jsx';
 import { createFieldCipher, hashPassword } from '../../src/hub/crypto.js';
-import { createMemoryHubRepo } from '../../src/hub/repo.js';
+import { createD1HubRepo, createMemoryHubRepo } from '../../src/hub/repo.js';
 
 const origin = 'https://hub.example';
 const password = 'hub admin password';
@@ -33,7 +34,7 @@ async function setup(feeds = new Map([[feedA, yamlFeed], [feedB, base64Feed], [e
     });
     const app = createApp({
         hub: {
-            repo, adminPasswordHash: await hashPassword(password, { iterations: 10 }), dataEncryptionKey,
+            repo, adminPasswordHash: await hashPassword(password, { iterations: 10000 }), dataEncryptionKey,
             fetchImpl, cacheTtlSeconds: 60, maxStaleSeconds: 120, ...cache
         }
     });
@@ -129,7 +130,7 @@ describe('Hub source and collection APIs', () => {
         expect((await json(api(sourcePath, 'PUT', { url: '' }))).source.maskedUrl).toBe(a.maskedUrl);
         expect((await repo.getSource(a.id)).url).toBe(feedA);
         await json(api(sourcePath, 'PUT', { alias: 'Updated A', url: editedFeed }));
-        expect((await json(api(sourcePath + '/refresh', 'POST'))).source).toMatchObject({ status: 'ok', cacheVersion: 2 });
+        expect((await json(api(sourcePath + '/refresh', 'POST'))).source).toMatchObject({ status: 'ok', cacheVersion: 3 });
         expect((await yamlNodes(sub(all.subscriptionPath))).map(node => node.name)).toEqual(['Updated A | Updated', 'B | Trojan']);
         expect((await yamlNodes(sub(onlyA.subscriptionPath))).map(node => node.name)).toEqual(['Updated']);
 
@@ -300,5 +301,49 @@ describe('Hub subscription dispatch', () => {
         const missingRepo = await createApp().request(origin + '/sub/invalid-token');
         expect(missingRepo.status).toBe(503);
         expectSubHeaders(missingRepo);
+    });
+
+    it('runs end-to-end Hub APIs and /sub/:token against D1 with encrypted node cache', async () => {
+        await applyD1Migrations(env.HUB_DB, [{
+            name: '0001_hub_init.sql', queries: schema.split(';').map(q => q.trim()).filter(Boolean)
+        }]);
+        await env.HUB_DB.batch(['sessions', 'login_attempts', 'collections', 'sources']
+            .map(table => env.HUB_DB.prepare(`DELETE FROM ${table}`)));
+
+        const feeds = new Map([[feedA, yamlFeed], [feedB, base64Feed]]);
+        const fetchImpl = vi.fn(async url => new Response(feeds.get(url) ?? '', { status: 200 }));
+        const cipher = createFieldCipher(dataEncryptionKey);
+        const repo = createD1HubRepo(env.HUB_DB, { cipher });
+        const app = createApp({
+            hub: {
+                db: env.HUB_DB, repo, adminPasswordHash: await hashPassword(password, { iterations: 10000 }),
+                dataEncryptionKey, fetchImpl
+            }
+        });
+        const login = await app.request(origin + '/api/hub/login', {
+            method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ password })
+        });
+        const cookie = login.headers.get('Set-Cookie').split(';')[0];
+        const call = (path, method = 'GET', data) => app.request(origin + '/api/hub' + path, {
+            method, headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/json' },
+            body: data !== undefined ? JSON.stringify(data) : undefined
+        });
+
+        const srcA = (await json(call('/sources', 'POST', { alias: 'A', url: feedA }), 201)).source;
+        const srcB = (await json(call('/sources', 'POST', { alias: 'B', url: feedB }), 201)).source;
+        const rawNodes = await env.HUB_DB.prepare('SELECT nodes_json FROM sources WHERE id = ?').bind(srcA.id).first();
+        expect(rawNodes.nodes_json).toMatch(/^enc:v1:/);
+
+        const col = (await json(call('/collections', 'POST', { alias: 'D1Mix', sourceIds: [srcA.id, srcB.id] }), 201)).collection;
+        const subRes = await app.request(origin + col.subscriptionPath, { headers: { 'User-Agent': 'Clash Verge/2.0' } });
+        expect(subRes.status).toBe(200);
+        expect(yaml.load(await subRes.text()).proxies.map(p => p.name)).toEqual(['A | Shared', 'A | VMess', 'B | Trojan']);
+
+        // Force both sources expired so /sub/:token refreshes both concurrently.
+        await env.HUB_DB.prepare('UPDATE sources SET last_success_at = 1').run();
+        fetchImpl.mockClear();
+        const refreshedSub = await app.request(origin + col.subscriptionPath, { headers: { 'User-Agent': 'Clash Verge/2.0' } });
+        expect(refreshedSub.status).toBe(200);
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
     });
 });

@@ -9,6 +9,11 @@ export function createVercelRuntime(env = process.env) {
         kv: resolveKv(env),
         assetFetcher: createFileAssetFetcher('public'),
         logger: console,
+        hub: {
+            adminPasswordHash: env.ADMIN_PASSWORD_HASH || null,
+            dataEncryptionKey: env.DATA_ENCRYPTION_KEY || null,
+            authRequired: env.HUB_AUTH_REQUIRED === 'true'
+        },
         config: {
             configTtlSeconds: undefined,
             shortLinkTtlSeconds: null

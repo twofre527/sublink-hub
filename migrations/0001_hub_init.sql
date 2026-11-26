@@ -41,8 +41,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at INTEGER NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+
 CREATE TABLE IF NOT EXISTS login_attempts (
     ip TEXT PRIMARY KEY,
     count INTEGER NOT NULL DEFAULT 0,
     reset_at INTEGER NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_login_attempts_reset_at ON login_attempts(reset_at);

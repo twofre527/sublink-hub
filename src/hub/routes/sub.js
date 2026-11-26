@@ -41,30 +41,30 @@ export function mountSubRoutes(app, { refresher } = {}) {
 
         const cacheTtlMs = (config?.cacheTtlSeconds ?? 21600) * 1000;
         const maxStaleMs = (config?.maxStaleSeconds ?? 604800) * 1000;
-        const now = Date.now();
-        const entries = [];
         const sourceRefresher = getRefresher(hub);
-        for (const id of collection.sourceIds) {
+        const resolved = await Promise.all(collection.sourceIds.map(async id => {
             const source = await repo.getSource(id);
-            if (!source?.enabled) continue;
+            if (!source?.enabled) return null;
 
             const hasNodes = Array.isArray(source.nodes) && source.nodes.length > 0;
+            const now = Date.now();
             const age = source.lastSuccessAt ? now - source.lastSuccessAt : Infinity;
             if (hasNodes && age <= cacheTtlMs) {
-                entries.push(toEntry(source));
-            } else if (hasNodes && age <= maxStaleMs) {
-                entries.push(toEntry(source));
+                return toEntry(source);
+            }
+            if (hasNodes && age <= maxStaleMs) {
                 const background = sourceRefresher.refreshSource(source.id).catch(() => {});
                 try {
                     c.executionCtx?.waitUntil?.(background);
                 } catch {
                     // The refresh can continue in runtimes that lack a request execution context.
                 }
-            } else {
-                const result = await sourceRefresher.refreshSource(source.id, { now });
-                if (result.ok && result.source?.nodes?.length) entries.push(toEntry(result.source));
+                return toEntry(source);
             }
-        }
+            const result = await sourceRefresher.refreshSource(source.id, { now });
+            return result.ok && result.source?.nodes?.length ? toEntry(result.source) : null;
+        }));
+        const entries = resolved.filter(Boolean);
 
         const { nodes } = mergeSourceNodes(entries, collection);
         if (!nodes.length) return textError(503, 'No available proxy nodes');

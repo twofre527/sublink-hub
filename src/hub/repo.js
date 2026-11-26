@@ -1,18 +1,21 @@
 import { createFieldCipher, randomBase64Url, sha256Hex } from './crypto.js';
 
 const urlAad = id => `source:${id}:url`;
+const nodesAad = id => `source:${id}:nodes`;
 const tokenAad = id => `collection:${id}:token`;
 const arrayFromJson = value => JSON.parse(value ?? '[]');
 
 async function readSource(row, cipher) {
-    return row ? {
+    if (!row) return null;
+    const nodesJson = row.nodes_json ? await cipher.decrypt(row.nodes_json, nodesAad(row.id)) : null;
+    return {
         id: row.id, alias: row.alias, url: await cipher.decrypt(row.url, urlAad(row.id)),
         inputFormat: row.input_format, requestUA: row.request_ua, enabled: Boolean(row.enabled),
-        nodes: arrayFromJson(row.nodes_json), nodeCount: row.node_count, droppedCount: row.dropped_count,
+        nodes: arrayFromJson(nodesJson), nodeCount: row.node_count, droppedCount: row.dropped_count,
         diagnostics: arrayFromJson(row.diagnostics_json), status: row.status, lastError: row.last_error,
         lastAttemptAt: row.last_attempt_at, lastSuccessAt: row.last_success_at, cacheVersion: row.cache_version,
         createdAt: row.created_at, updatedAt: row.updated_at
-    } : null;
+    };
 }
 
 async function readCollection(row, cipher) {
@@ -59,21 +62,27 @@ function createRepo(store, cipher) {
             if (inputFormat !== undefined) fields.input_format = inputFormat;
             if (requestUA !== undefined) fields.request_ua = requestUA;
             if (enabled !== undefined) fields.enabled = Number(enabled);
-            return source(await store.update('sources', id, fields));
+            const invalidatesCache = url !== undefined || inputFormat !== undefined || requestUA !== undefined;
+            if (invalidatesCache) {
+                // Force fresh fetch and invalidate any older-version in-flight refresh.
+                fields.last_success_at = null;
+            }
+            return source(await store.update('sources', id, fields, invalidatesCache ? 'cache_version' : undefined));
         },
         async saveSourceRefreshSuccess(id, { nodes, droppedCount = 0, diagnostics = [], attemptedAt = Date.now(), expectedVersion }) {
+            const encryptedNodes = await cipher.encrypt(JSON.stringify(nodes), nodesAad(id));
             const row = await store.update('sources', id, {
-                nodes_json: JSON.stringify(nodes), node_count: nodes.length, dropped_count: droppedCount,
+                nodes_json: encryptedNodes, node_count: nodes.length, dropped_count: droppedCount,
                 diagnostics_json: JSON.stringify(diagnostics), status: 'ok', last_error: null,
                 last_attempt_at: attemptedAt, last_success_at: attemptedAt, updated_at: Date.now()
             }, 'cache_version', expectedVersion);
             if (row) return { updated: true, source: await source(row) };
             return { updated: false, conflict: expectedVersion !== undefined && Boolean(await store.find('sources', 'id', id)) };
         },
-        async saveSourceRefreshFailure(id, { error, attemptedAt = Date.now() }) {
+        async saveSourceRefreshFailure(id, { error, attemptedAt = Date.now(), expectedVersion }) {
             return source(await store.update('sources', id, {
                 status: 'error', last_error: String(error), last_attempt_at: attemptedAt, updated_at: Date.now()
-            }));
+            }, undefined, expectedVersion));
         },
         async deleteSource(id) {
             if (await store.removeSource(id)) return { deleted: true };
@@ -135,11 +144,18 @@ function createRepo(store, cipher) {
         async purgeExpiredSessions(now = Date.now()) {
             await store.purge(now);
         },
+        async purgeExpiredLoginAttempts(now = Date.now()) {
+            await store.purgeAttempts(now);
+        },
         async getLoginRateLimit(ip, { now = Date.now(), maxAttempts = 5 } = {}) {
             const row = await store.find('login_attempts', 'ip', ip);
             const active = row && now < row.reset_at;
             const count = active ? row.count : 0;
             return { blocked: count >= maxAttempts, remaining: Math.max(0, maxAttempts - count), resetAt: active ? row.reset_at : null };
+        },
+        async consumeLoginAttempt(ip, { now = Date.now(), windowMs = 15 * 60 * 1000, maxAttempts = 5 } = {}) {
+            const row = await store.recordFailure(ip, now, now + windowMs);
+            return { count: row.count, allowed: row.count <= maxAttempts, blocked: row.count > maxAttempts, resetAt: row.reset_at };
         },
         async recordLoginFailure(ip, { now = Date.now(), windowMs = 15 * 60 * 1000, maxAttempts = 5 } = {}) {
             const row = await store.recordFailure(ip, now, now + windowMs);
@@ -186,6 +202,9 @@ export function createD1HubRepo(db, { cipher = createFieldCipher(null) } = {}) {
         purge(now) {
             return db.prepare('DELETE FROM sessions WHERE expires_at <= ?').bind(now).run();
         },
+        purgeAttempts(now) {
+            return db.prepare('DELETE FROM login_attempts WHERE reset_at <= ?').bind(now).run();
+        },
         recordFailure(ip, now, resetAt) {
             return db.prepare(`INSERT INTO login_attempts (ip, count, reset_at) VALUES (?, 1, ?)
                 ON CONFLICT(ip) DO UPDATE SET
@@ -230,6 +249,11 @@ export function createMemoryHubRepo({ cipher = createFieldCipher(null) } = {}) {
         purge(now) {
             for (const [key, row] of tables.sessions) {
                 if (row.expires_at <= now) tables.sessions.delete(key);
+            }
+        },
+        purgeAttempts(now) {
+            for (const [key, row] of tables.login_attempts) {
+                if (row.reset_at <= now) tables.login_attempts.delete(key);
             }
         },
         recordFailure(ip, now, resetAt) {

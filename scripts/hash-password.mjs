@@ -28,8 +28,8 @@ async function readPassword() {
 }
 
 try {
-    const { values } = parseArgs({ options: { 'gen-key': { type: 'boolean' }, password: { type: 'string' } } });
-    console.log(values['gen-key'] ? randomBase64Url(32) : await hashPassword(values.password ?? await readPassword()));
+    const { values } = parseArgs({ options: { 'gen-key': { type: 'boolean' } } });
+    console.log(values['gen-key'] ? randomBase64Url(32) : await hashPassword(await readPassword()));
 } catch (error) {
     stderr.write(`${error.message}\n`);
     process.exitCode = 1;

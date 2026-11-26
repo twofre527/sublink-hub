@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 
 const utf8 = new TextEncoder();
+const minIterations = 10000;
 const maxIterations = 100000;
 
 function base64Url(bytes) {
@@ -43,7 +44,7 @@ export function constantTimeEqual(a, b) {
 }
 
 function validIterations(iterations) {
-    return Number.isInteger(iterations) && iterations >= 1 && iterations <= maxIterations;
+    return Number.isInteger(iterations) && iterations >= minIterations && iterations <= maxIterations;
 }
 
 async function derivePassword(password, salt, iterations) {
@@ -54,7 +55,7 @@ async function derivePassword(password, salt, iterations) {
 
 export async function hashPassword(password, { iterations = maxIterations } = {}) {
     if (typeof password !== 'string' || !password.length) throw new Error('Password must be a non-empty string');
-    if (!validIterations(iterations)) throw new Error('Iterations must be an integer from 1 to 100000');
+    if (!validIterations(iterations)) throw new Error(`Iterations must be an integer from ${minIterations} to ${maxIterations}`);
     const salt = crypto.getRandomValues(new Uint8Array(16));
     const derived = await derivePassword(password, salt, iterations);
     return ['pbkdf2_sha256', iterations, base64Url(salt), base64Url(derived)].join('$');
@@ -62,7 +63,7 @@ export async function hashPassword(password, { iterations = maxIterations } = {}
 
 export async function verifyPassword(password, storedHash) {
     if (typeof password !== 'string' || !password.length || typeof storedHash !== 'string') return false;
-    const match = /^pbkdf2_sha256\$([1-9]\d{0,5})\$([\w-]{22})\$([\w-]{43})$/.exec(storedHash);
+    const match = /^pbkdf2_sha256\$([1-9]\d{4,5})\$([\w-]{22})\$([\w-]{43})$/.exec(storedHash);
     if (!match || !validIterations(Number(match[1]))) return false;
     try {
         const salt = decodeBase64Url(match[2]);
@@ -74,16 +75,17 @@ export async function verifyPassword(password, storedHash) {
 }
 
 export function createFieldCipher(rawKey) {
-    if (!rawKey) {
+    const normalizedKey = typeof rawKey === 'string' ? rawKey.trim() : '';
+    if (!normalizedKey) {
         const identity = async value => value;
         return { enabled: false, encrypt: identity, decrypt: identity };
     }
 
     let bytes;
     try {
-        bytes = /^[\da-f]{64}$/i.test(rawKey)
-            ? Uint8Array.from(rawKey.match(/../g), pair => parseInt(pair, 16))
-            : decodeBase64(rawKey);
+        bytes = /^[\da-f]{64}$/i.test(normalizedKey)
+            ? Uint8Array.from(normalizedKey.match(/../g), pair => parseInt(pair, 16))
+            : decodeBase64(normalizedKey);
     } catch {
         throw new Error('Encryption key must encode 32 bytes as hex, base64 or base64url');
     }

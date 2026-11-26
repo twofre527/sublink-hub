@@ -1,7 +1,8 @@
 import yaml from 'js-yaml';
 import { ProxyParser } from '../../parsers/ProxyParser.js';
+import { convertSurgeProxyToObject } from '../../parsers/convertSurgeProxyToObject.js';
 import { convertYamlProxyToObject } from '../../parsers/convertYamlProxyToObject.js';
-import { parseSingboxJson, parseSurgeIni } from '../../parsers/subscription/subscriptionContentParser.js';
+import { parseSingboxJson } from '../../parsers/subscription/subscriptionContentParser.js';
 import { InvalidPayloadError } from '../../services/errors.js';
 import { decodeBase64 } from '../../utils.js';
 
@@ -9,9 +10,11 @@ const BLOCKED_PORTS = new Set([3306, 5432, 6379, 27017, 11211, 9200, 2375, 2379]
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const URI_SCHEMES = new Set(['ss', 'vmess', 'vless', 'trojan', 'hysteria', 'hysteria2', 'hy2', 'tuic', 'anytls']);
 const SURGE_TYPES = new Set(['ss', 'shadowsocks', 'vmess', 'trojan', 'tuic', 'hysteria2', 'hy2']);
+const SURGE_BUILTIN_TYPES = new Set(['direct', 'reject', 'reject-tinygif', 'http', 'https']);
 const SINGBOX_NON_PROXY_TYPES = new Set(['direct', 'block', 'dns', 'selector', 'urltest']);
 const INPUT_FORMATS = new Set(['auto', 'yaml', 'base64', 'uri', 'json', 'surge']);
 const URI_SCHEME = /^([a-z][a-z\d+.-]*):\/\//i;
+const MAX_DIAGNOSTICS = 50;
 
 function validateUrl(rawUrl, base) {
     let url;
@@ -33,8 +36,10 @@ function validateUrl(rawUrl, base) {
     const ipv4 = /^\d+\.\d+\.\d+\.\d+$/.test(hostname);
     let blocked;
     if (ipv6) {
-        const address = hostname.slice(1, -1);
-        blocked = /^(?:::1?$|::ffff:|f[cd][\da-f]{2}:|fe[89ab][\da-f]:|ff[\da-f]{2}:)/.test(address);
+        const address = hostname.slice(1, -1).toLowerCase();
+        // Block ::/96 (unspecified, loopback, IPv4-compatible), ::ffff:/96, 100::/64 (discard),
+        // 64:ff9b::/96 & 64:ff9b:1::/48 (NAT64), fc00::/7 (ULA), fe80::/10, fec0::/10, ff00::/8.
+        blocked = /^(?:::[\da-f:.]*$|::ffff:|100::|64:ff9b:(?::|1:)|f[cd][\da-f]{2}:|fe[89a-f][\da-f]:|ff[\da-f]{2}:)/.test(address);
     } else if (ipv4) {
         const [first, second] = hostname.split('.').map(Number);
         blocked = first === 0 || first === 10 || first === 127 || first >= 224 ||
@@ -63,6 +68,7 @@ async function readResponseText(response, { maxBytes, controller, hostname }) {
     const contentLength = response.headers.get('content-length');
     if (contentLength !== null && Number(contentLength) > maxBytes) {
         controller.abort();
+        void response.body?.cancel().catch(() => {});
         throw new InvalidPayloadError('Upstream subscription exceeds the byte limit');
     }
     if (!response.body) return '';
@@ -165,6 +171,14 @@ function normalizeBase64(text) {
     return remainder === 1 ? null : unpadded + '='.repeat((4 - remainder) % 4);
 }
 
+function firstContentLine(text) {
+    for (const rawLine of text.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (line && !/^(?:[#;]|\/\/)/.test(line)) return line;
+    }
+    return '';
+}
+
 function detectFormat(text) {
     if (/^[ \t]*\[proxy\][ \t]*\r?$/im.test(text) ||
         (/^[ \t]*\[general\][ \t]*\r?$/im.test(text) && /^[ \t]*\[rule\][ \t]*\r?$/im.test(text))) {
@@ -178,10 +192,11 @@ function detectFormat(text) {
             // Flow-style YAML shares JSON's opening delimiters.
         }
     }
-    if (/(?:^|[\n{,])[ \t]*['"]?(?:proxies|proxy-providers|proxy-groups|dns|rules)['"]?[ \t]*:/m.test(text)) {
+    if (URI_SCHEME.test(firstContentLine(text))) return 'uri';
+    if ((text.startsWith('{') && /(?:^|[\n{,])[ \t]*['"]?(?:proxies|proxy-providers|proxy-groups|dns|rules)['"]?[ \t]*:/m.test(text)) ||
+        /(?:^|\n)[ \t]*['"]?(?:proxies|proxy-providers|proxy-groups|dns|rules)['"]?[ \t]*:/m.test(text)) {
         return 'yaml';
     }
-    if (/^[ \t]*[a-z][a-z\d+.-]*:\/\//im.test(text)) return 'uri';
     return null;
 }
 
@@ -211,9 +226,89 @@ function validPort(value) {
         Number.isInteger(Number(value)) && Number(value) >= 1 && Number(value) <= 65535;
 }
 
+function assertBoundedGraph(root, { maxVisits = 200000, maxDepth = 16 } = {}) {
+    let visits = 0;
+    const ancestors = new Set();
+    function visit(value, depth) {
+        if (++visits > maxVisits) throw new InvalidPayloadError('YAML alias expansion limit exceeded');
+        if (value === null || typeof value !== 'object') return;
+        if (depth > maxDepth || ancestors.has(value)) throw new InvalidPayloadError('YAML alias expansion limit exceeded');
+        ancestors.add(value);
+        if (Array.isArray(value)) {
+            for (let i = 0; i < value.length; i++) visit(value[i], depth + 1);
+        } else {
+            for (const key of Object.keys(value)) visit(value[key], depth + 1);
+        }
+        ancestors.delete(value);
+    }
+    visit(root, 0);
+}
+
+function parseDurationSeconds(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value !== 'string') return undefined;
+    const match = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h)?\s*$/i.exec(value);
+    if (!match) return undefined;
+    const num = Number(match[1]);
+    const unit = (match[2] || 's').toLowerCase();
+    if (unit === 'h') return Math.round(num * 3600);
+    if (unit === 'm') return Math.round(num * 60);
+    if (unit === 'ms') return Math.round(num / 1000);
+    return Math.round(num);
+}
+
+function parseMbpsNumber(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value !== 'string') return undefined;
+    const match = /^\s*(\d+(?:\.\d+)?)/.exec(value);
+    return match ? Number(match[1]) : undefined;
+}
+
+function normalizeSingboxProxy(proxy) {
+    if (!proxy || typeof proxy !== 'object') return proxy;
+    const next = { ...proxy };
+    if (!next.alpn && Array.isArray(next.tls?.alpn)) next.alpn = next.tls.alpn;
+    if (next.type === 'hysteria2') {
+        if (!next.ports && Array.isArray(next.server_ports) && next.server_ports.length > 0) {
+            next.ports = next.server_ports.map(entry => String(entry).replace(/:/g, '-')).join(',');
+            delete next.server_ports;
+        }
+        if (next.up === undefined && next.up_mbps !== undefined) {
+            const up = parseMbpsNumber(next.up_mbps);
+            if (up !== undefined) next.up = up;
+            delete next.up_mbps;
+        }
+        if (next.down === undefined && next.down_mbps !== undefined) {
+            const down = parseMbpsNumber(next.down_mbps);
+            if (down !== undefined) next.down = down;
+            delete next.down_mbps;
+        }
+        if (typeof next.hop_interval === 'string') {
+            const secs = parseDurationSeconds(next.hop_interval);
+            if (secs !== undefined) next.hop_interval = secs;
+        }
+    }
+    if (next.type === 'anytls') {
+        for (const key of ['idle_session_check_interval', 'idle_session_timeout']) {
+            if (typeof next[key] === 'string') {
+                const secs = parseDurationSeconds(next[key]);
+                if (secs !== undefined) next[key] = secs;
+            }
+        }
+    }
+    if (next.type === 'tuic' && next.zero_rtt === undefined && next.zero_rtt_handshake !== undefined) {
+        next.zero_rtt = Boolean(next.zero_rtt_handshake);
+        delete next.zero_rtt_handshake;
+    }
+    return next;
+}
+
 function parseYaml(text, add, drop, diagnostics) {
-    const aliases = text.match(/(?:^|[\s[\]{},:])\*[^\s[\]{},]+/g);
-    if (aliases?.length > 50) throw new InvalidPayloadError('YAML alias expansion limit exceeded');
+    // Only check alias token count when YAML anchors exist so normal node names like "*2x" are never rejected.
+    if (/(?:^|[\s[\]{},:])&[^\s[\]{},]+/m.test(text)) {
+        const aliases = text.match(/(?:^|[\s[\]{},:])\*[^\s[\]{},]+/g);
+        if (aliases?.length > 50) throw new InvalidPayloadError('YAML alias expansion limit exceeded');
+    }
     if (/(?:^|[\s[\]{},:])(?:!<|!!js\/)/m.test(text)) {
         throw new InvalidPayloadError('Custom YAML tags are unsupported');
     }
@@ -224,6 +319,7 @@ function parseYaml(text, add, drop, diagnostics) {
     } catch {
         throw new InvalidPayloadError('Invalid Clash YAML');
     }
+    assertBoundedGraph(parsed);
     const proxies = Array.isArray(parsed?.proxies) ? parsed.proxies : [];
     if (Object.hasOwn(parsed ?? {}, 'proxy-providers') && proxies.length === 0) {
         diagnostics.push('proxy-providers is not supported yet; no inline proxies found');
@@ -234,7 +330,11 @@ function parseYaml(text, add, drop, diagnostics) {
             drop(label, 'invalid port');
             continue;
         }
-        const node = convertYamlProxyToObject(proxy);
+        // Clash/Mihomo defaults Trojan to TLS enabled unless explicitly set to false.
+        const yamlProxy = String(proxy?.type || '').toLowerCase() === 'trojan' && proxy.tls === undefined
+            ? { ...proxy, tls: true }
+            : proxy;
+        const node = convertYamlProxyToObject(yamlProxy);
         if (node?.type === 'vmess' && node.tls?.enabled && proxy['client-fingerprint'] != null) {
             node.tls.utls = { enabled: true, fingerprint: String(proxy['client-fingerprint']) };
         }
@@ -256,13 +356,12 @@ function parseJson(text, add, drop) {
     for (const [index, outbound] of outbounds.entries()) {
         if (SINGBOX_NON_PROXY_TYPES.has(outbound?.type)) continue;
         const label = 'JSON outbound ' + (index + 1);
-        if (outbound?.type && outbound?.server) add(proxies[proxyIndex++], label);
+        if (outbound?.type && outbound?.server) add(normalizeSingboxProxy(proxies[proxyIndex++]), label);
         else drop(label, 'invalid connection fields');
     }
 }
 
 function parseSurge(text, add, drop) {
-    const entries = [];
     let inProxySection = false;
     for (const [index, rawLine] of text.split(/\r?\n/).entries()) {
         const line = rawLine.trim();
@@ -273,15 +372,38 @@ function parseSurge(text, add, drop) {
         }
         if (!inProxySection) continue;
         const label = 'Surge line ' + (index + 1);
-        const entry = /^[^=]+=\s*([^,]+),([^,]+),([^,]+)/.exec(line);
-        if (!entry || !SURGE_TYPES.has(entry[1].trim().toLowerCase())) drop(label, 'unsupported or malformed proxy');
-        else if (!entry[2].trim() || !validPort(entry[3])) drop(label, 'invalid connection fields');
-        else entries.push({ line, label });
+        const eqIndex = line.indexOf('=');
+        if (eqIndex <= 0) {
+            drop(label, 'unsupported or malformed proxy');
+            continue;
+        }
+        const parts = line.slice(eqIndex + 1).split(',').map(part => part.trim());
+        const type = (parts[0] || '').toLowerCase();
+        if (SURGE_BUILTIN_TYPES.has(type)) continue;
+        if (!SURGE_TYPES.has(type)) {
+            drop(label, 'unsupported or malformed proxy');
+            continue;
+        }
+        if (parts.length < 3 || !parts[1] || !validPort(parts[2])) {
+            drop(label, 'invalid connection fields');
+            continue;
+        }
+        add(convertSurgeProxyToObject(line), label);
     }
+}
 
-    // Project the proxy section so upstream settings stay outside the Hub output.
-    const proxies = parseSurgeIni('[Proxy]\n' + entries.map(entry => entry.line).join('\n'))?.proxies ?? [];
-    for (const [index, { label }] of entries.entries()) add(proxies[index], label);
+function decodeFragmentSafely(fragment) {
+    try {
+        return { fragment, decoded: decodeURIComponent(fragment) };
+    } catch {
+        const escaped = '#' + fragment.slice(1).replace(/%(?![0-9a-fA-F]{2})/g, '%25');
+        try {
+            decodeURIComponent(escaped);
+            return { fragment: escaped, decoded: null };
+        } catch {
+            return { fragment: '#' + encodeURIComponent(fragment.slice(1)), decoded: null };
+        }
+    }
 }
 
 function prepareUri(line, scheme) {
@@ -292,8 +414,7 @@ function prepareUri(line, scheme) {
         if (!payload) return null;
         // The upstream parser logs JSON parse errors, which can quote decoded credentials.
         JSON.parse(decodeBase64(payload));
-        const fragment = separator < 0 ? '' : body.slice(separator);
-        decodeURIComponent(fragment);
+        const fragment = separator < 0 ? '' : decodeFragmentSafely(body.slice(separator)).fragment;
         return 'vmess://' + payload + fragment;
     }
     if (scheme === 'anytls') {
@@ -331,6 +452,21 @@ async function parseUris(text, remainingDepth, add, drop) {
     }
 }
 
+const nonEmptyString = value => typeof value === 'string' && value.length > 0;
+
+function hasProtocolCredentials(node) {
+    switch (node.type) {
+        case 'shadowsocks': return nonEmptyString(node.method) && nonEmptyString(node.password);
+        case 'vmess':
+        case 'vless': return nonEmptyString(node.uuid);
+        case 'trojan':
+        case 'hysteria2':
+        case 'anytls': return nonEmptyString(node.password);
+        case 'tuic': return nonEmptyString(node.uuid) && nonEmptyString(node.password);
+        default: return true;
+    }
+}
+
 export async function parseSubscriptionPayload(rawText, { inputFormat = 'auto', maxNodes = 5000, maxDecodeDepth = 2 } = {}) {
     if (!INPUT_FORMATS.has(inputFormat)) throw new InvalidPayloadError('Unsupported input format');
     const payload = unwrapPayload((rawText ?? '').trim(), maxDecodeDepth);
@@ -344,11 +480,16 @@ export async function parseSubscriptionPayload(rawText, { inputFormat = 'auto', 
 
     const drop = (label, reason) => {
         droppedCount++;
-        diagnostics.push(label + ': ' + reason);
+        if (diagnostics.length < MAX_DIAGNOSTICS) {
+            diagnostics.push(label + ': ' + reason);
+        } else if (diagnostics.length === MAX_DIAGNOSTICS) {
+            diagnostics.push('Additional diagnostics omitted');
+        }
     };
     const add = (node, label) => {
         if (typeof node?.type !== 'string' || !node.type.trim() ||
-            typeof node.server !== 'string' || !node.server.trim() || !validPort(node.server_port)) {
+            typeof node.server !== 'string' || !node.server.trim() || !validPort(node.server_port) ||
+            !hasProtocolCredentials(node)) {
             drop(label, 'unsupported or invalid connection fields');
             return;
         }

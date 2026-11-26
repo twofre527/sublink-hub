@@ -28,7 +28,7 @@ export function registerHub(app, runtime, routeMounters = {}) {
     const repo = config?.repo ?? (config?.db ? createD1HubRepo(config.db, { cipher }) : null);
     const adminPasswordHash = config?.adminPasswordHash || null;
     const auth = repo && adminPasswordHash ? createAuthService({ repo, adminPasswordHash }) : null;
-    const refresher = repo ? createSourceRefresher({ repo, fetchImpl: config?.fetchImpl }) : undefined;
+    const refresher = repo ? createSourceRefresher({ repo, fetchImpl: config?.fetchImpl, inFlightKey: config?.db ?? repo }) : undefined;
 
     app.use('*', async (c, next) => {
         c.set('hub', { repo, auth, cipher, config, adminPasswordHash });
@@ -65,6 +65,13 @@ export function registerHub(app, runtime, routeMounters = {}) {
         if (mutationMethods.includes(method) && !verifySameOrigin(c)) {
             if (!hubPath) applyHubSecurityHeaders(c);
             return forbidden(c);
+        }
+        if (!hubPath) {
+            c.header('Cache-Control', 'private, no-store');
+            c.header('Referrer-Policy', 'no-referrer');
+            if (read && path === '/shorten-v2') {
+                return errorResponse(c, 405, 'METHOD_NOT_ALLOWED', 'Use POST /shorten-v2');
+            }
         }
         return next();
     });

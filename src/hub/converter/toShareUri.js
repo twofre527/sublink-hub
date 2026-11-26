@@ -23,6 +23,9 @@ function shadowsocksPlugin(plugin, options) {
 function vmessUri(node, server, port, tag) {
     const { transport, tls } = node;
     const network = transport?.type || node.network || 'tcp';
+    const rawPath = network === 'grpc' ? transport?.service_name : transport?.path;
+    const path = Array.isArray(rawPath) ? (rawPath[0] ?? '') : (rawPath ?? '');
+    const alpn = listParam(tls?.alpn ?? node.alpn);
     return `vmess://${encodeBase64(JSON.stringify({
         v: '2',
         ps: tag,
@@ -33,12 +36,13 @@ function vmessUri(node, server, port, tag) {
         scy: node.security || 'auto',
         net: network === 'http' ? 'tcp' : network,
         type: network === 'http' ? 'http' : 'none',
-        host: transportHost(transport),
-        path: network === 'grpc' ? transport?.service_name : transport?.path,
+        host: listParam(transportHost(transport)) || '',
+        path,
         ...(network === 'http' ? { method: transport?.method, headers: transport?.headers } : {}),
         tls: tls?.enabled ? 'tls' : '',
         sni: tls?.server_name || '',
         fp: tls?.utls?.fingerprint || '',
+        ...(alpn ? { alpn } : {}),
         'skip-cert-verify': tls?.insecure ? true : undefined
     }))}`;
 }
@@ -46,7 +50,7 @@ function vmessUri(node, server, port, tag) {
 function vlessTrojanParams(node, defaultTls) {
     const { tls, transport } = node;
     return {
-        security: tls?.reality?.enabled ? 'reality' : (tls?.enabled ?? defaultTls) ? 'tls' : 'none',
+        security: tls?.reality?.enabled ? 'reality' : (defaultTls || tls?.enabled) ? 'tls' : 'none',
         sni: tls?.server_name,
         fp: tls?.utls?.fingerprint,
         pbk: tls?.reality?.public_key,
@@ -68,7 +72,9 @@ export function nodeToShareUri(node) {
     const rawPort = node?.server_port;
     const port = typeof rawPort === 'number' || typeof rawPort === 'string' ? Number(rawPort) : NaN;
     const server = typeof node?.server === 'string' ? node.server.trim() : '';
-    if (!server || !Number.isInteger(port) || port < 1 || port > 65535) return warning();
+    if (!server || /[\x00-\x20\x7f/@?#,\\]/.test(server) || !Number.isInteger(port) || port < 1 || port > 65535) {
+        return warning();
+    }
 
     const { tls } = node;
     const tag = node.tag ?? node.name ?? '';

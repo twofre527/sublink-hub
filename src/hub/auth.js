@@ -21,7 +21,7 @@ export function getSessionTokenFromRequest(c) {
 
 export function buildSessionCookie(rawToken, { maxAgeSeconds, requestUrl }) {
     const { protocol, hostname } = new URL(requestUrl);
-    const local = protocol === 'http:' && (hostname === 'localhost' || hostname === '127.0.0.1');
+    const local = protocol === 'http:' && (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]');
     return `${SESSION_COOKIE_NAME}=${rawToken}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${maxAgeSeconds}${local ? '' : '; Secure'}`;
 }
 
@@ -60,21 +60,31 @@ export function applyHubSecurityHeaders(c, { isHtml = false } = {}) {
 export function createAuthService({ repo, adminPasswordHash }) {
     return {
         async login({ password, rememberMe = false, ip = 'unknown', now = Date.now() }) {
-            const limit = await repo.getLoginRateLimit(ip, { now, maxAttempts: LOGIN_MAX_ATTEMPTS });
-            if (limit.blocked) {
+            // Atomically reserve an attempt slot before PBKDF2 to eliminate concurrency bypasses and CPU amplification.
+            const attempt = typeof repo.consumeLoginAttempt === 'function'
+                ? await repo.consumeLoginAttempt(ip, { now, windowMs: LOGIN_WINDOW_MS, maxAttempts: LOGIN_MAX_ATTEMPTS })
+                : null;
+            if (attempt ? !attempt.allowed : (await repo.getLoginRateLimit(ip, { now, maxAttempts: LOGIN_MAX_ATTEMPTS })).blocked) {
+                const resetAt = attempt ? attempt.resetAt : (await repo.getLoginRateLimit(ip, { now, maxAttempts: LOGIN_MAX_ATTEMPTS })).resetAt;
                 return {
                     ok: false, status: 429, code: 'RATE_LIMITED', message: 'Too many login attempts, try again later',
-                    retryAfterSeconds: Math.ceil((limit.resetAt - now) / 1000)
+                    retryAfterSeconds: Math.max(1, Math.ceil((resetAt - now) / 1000))
                 };
             }
             if (!await verifyPassword(password, adminPasswordHash)) {
-                await repo.recordLoginFailure(ip, { now, windowMs: LOGIN_WINDOW_MS, maxAttempts: LOGIN_MAX_ATTEMPTS });
+                if (!attempt) {
+                    await repo.recordLoginFailure(ip, { now, windowMs: LOGIN_WINDOW_MS, maxAttempts: LOGIN_MAX_ATTEMPTS });
+                }
                 return { ok: false, status: 401, code: 'INVALID_CREDENTIALS', message: 'Invalid password' };
             }
             await repo.clearLoginFailures(ip);
             const token = randomBase64Url(32);
             const ttl = rememberMe ? REMEMBER_TTL_MS : SESSION_TTL_MS;
             await repo.createSession(await sha256Hex(token), now + ttl, now);
+            await Promise.allSettled([
+                repo.purgeExpiredSessions?.(now),
+                repo.purgeExpiredLoginAttempts?.(now)
+            ]);
             return { ok: true, token, maxAgeSeconds: ttl / 1000 };
         },
         async validateSession(rawToken, now = Date.now()) {

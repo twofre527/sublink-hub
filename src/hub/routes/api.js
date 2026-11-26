@@ -4,6 +4,8 @@ import { parseSubscriptionPayload, safeFetchSubscription, validateUpstreamUrl } 
 import { mergeSourceNodes } from '../converter/mergeNodes.js';
 
 const inputFormats = new Set(['auto', 'yaml', 'base64', 'uri', 'json', 'surge']);
+const ASCII_PRINTABLE = /^[\x20-\x7e]*$/;
+const sharedInFlight = new WeakMap();
 const errorJson = (c, status, code, message, extra = {}) => c.json({ error: { code, message }, ...extra }, status);
 const notFound = (c, resource) => errorJson(c, 404, 'NOT_FOUND', resource + ' not found');
 
@@ -22,16 +24,23 @@ export function sanitizeNodePreview(node) {
     };
 }
 
-export function createSourceRefresher({ repo, fetchImpl }) {
-    const inFlight = new Map();
+export function createSourceRefresher({ repo, fetchImpl, inFlightKey = repo }) {
+    let inFlight = inFlightKey && typeof inFlightKey === 'object' ? sharedInFlight.get(inFlightKey) : null;
+    if (!inFlight) {
+        inFlight = new Map();
+        if (inFlightKey && typeof inFlightKey === 'object') sharedInFlight.set(inFlightKey, inFlight);
+    }
 
     async function refresh(sourceId, now) {
         const source = await repo.getSource(sourceId);
         if (!source) return { ok: false, notFound: true };
 
-        const fail = async error => ({
-            ok: false, error, source: await repo.saveSourceRefreshFailure(sourceId, { error, attemptedAt: now })
-        });
+        const fail = async error => {
+            const updated = await repo.saveSourceRefreshFailure(sourceId, {
+                error, attemptedAt: now, expectedVersion: source.cacheVersion
+            });
+            return { ok: false, error, source: updated ?? await repo.getSource(sourceId) };
+        };
 
         let fetched;
         try {
@@ -61,9 +70,15 @@ export function createSourceRefresher({ repo, fetchImpl }) {
     return {
         refreshSource(sourceId, { now = Date.now() } = {}) {
             if (!inFlight.has(sourceId)) {
-                inFlight.set(sourceId, refresh(sourceId, now).finally(() => inFlight.delete(sourceId)));
+                const pending = refresh(sourceId, now).finally(() => {
+                    if (inFlight.get(sourceId) === pending) inFlight.delete(sourceId);
+                });
+                inFlight.set(sourceId, pending);
             }
             return inFlight.get(sourceId);
+        },
+        invalidate(sourceId) {
+            inFlight.delete(sourceId);
         }
     };
 }
@@ -72,7 +87,9 @@ export function createRefresherResolver(refresher) {
     const byRepo = new WeakMap();
     return ({ repo, config }) => {
         if (refresher) return refresher;
-        if (!byRepo.has(repo)) byRepo.set(repo, createSourceRefresher({ repo, fetchImpl: config?.fetchImpl }));
+        if (!byRepo.has(repo)) {
+            byRepo.set(repo, createSourceRefresher({ repo, fetchImpl: config?.fetchImpl, inFlightKey: config?.db ?? repo }));
+        }
         return byRepo.get(repo);
     };
 }
@@ -125,7 +142,11 @@ function readSourceFields(body, creating) {
         if (!inputFormats.has(body.inputFormat)) throw new InvalidPayloadError('Unsupported input format');
         patch.inputFormat = body.inputFormat;
     }
-    if (body.requestUA !== undefined) patch.requestUA = readString(body.requestUA, 'requestUA', 200);
+    if (body.requestUA !== undefined) {
+        const ua = readString(body.requestUA, 'requestUA', 200);
+        if (!ASCII_PRINTABLE.test(ua)) throw new InvalidPayloadError('Invalid requestUA');
+        patch.requestUA = ua || 'clash.meta';
+    }
     return patch;
 }
 
@@ -212,10 +233,14 @@ export function mountHubApiRoutes(app, { refresher } = {}) {
         return source ? c.json({ source: formatSourceResponse(source) }) : notFound(c, 'Source');
     }));
 
-    app.put('/api/hub/sources/:id', route(async (c, { repo }) => {
+    app.put('/api/hub/sources/:id', route(async (c, hub) => {
         const id = c.req.param('id');
-        if (!await repo.getSource(id)) return notFound(c, 'Source');
-        const source = await repo.updateSource(id, readSourceFields(await readBody(c), false));
+        if (!await hub.repo.getSource(id)) return notFound(c, 'Source');
+        const fields = readSourceFields(await readBody(c), false);
+        if (fields.url !== undefined || fields.inputFormat !== undefined || fields.requestUA !== undefined) {
+            getRefresher(hub).invalidate?.(id);
+        }
+        const source = await hub.repo.updateSource(id, fields);
         return source ? c.json({ source: formatSourceResponse(source) }) : notFound(c, 'Source');
     }));
 

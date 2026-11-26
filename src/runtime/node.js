@@ -9,6 +9,11 @@ export function createNodeRuntime(env = process.env) {
         kv: resolveKv(env),
         assetFetcher: createFileAssetFetcher(env.STATIC_DIR || 'public'),
         logger: console,
+        hub: {
+            adminPasswordHash: env.ADMIN_PASSWORD_HASH || null,
+            dataEncryptionKey: env.DATA_ENCRYPTION_KEY || null,
+            authRequired: env.HUB_AUTH_REQUIRED === 'true'
+        },
         config: {
             configTtlSeconds: parseNumber(env.CONFIG_TTL_SECONDS) ?? undefined,
             shortLinkTtlSeconds: parseNumber(env.SHORT_LINK_TTL_SECONDS) || null

@@ -121,7 +121,7 @@
                 byId('preview-warnings').replaceChildren(...warnings.map(text => el('li', {}, text)));
                 byId('preview-warnings').hidden = warnings.length === 0;
                 byId('preview-table-body').replaceChildren(...result.nodes.map(node => {
-                    const server = node.server.indexOf(':') === -1 ? node.server : '[' + node.server + ']';
+                    const server = node.server.indexOf(':') !== -1 && !node.server.startsWith('[') ? '[' + node.server + ']' : node.server;
                     const fields = [node.tag, node.type, server + ':' + node.port, node.tls ? '启用' : '关闭', node.transport];
                     return el('tr', {}, fields.map(value => el('td', {}, value)));
                 }));
@@ -219,13 +219,15 @@
                 enabled: byId('source-enabled').checked
             };
             if (url || !id) payload.url = url;
+            const saveBtn = byId('source-save-btn');
+            saveBtn.disabled = true;
             api(pathFor('sources', id), id ? 'PUT' : 'POST', payload).then(result => {
                 sourceForm.hidden = true;
                 return loadSources().then(() => {
                     if (!id && result.source.status === 'error') show('订阅源已保存，首次刷新失败：' + result.source.lastError, 'warning');
                     else show('订阅源已保存。');
                 });
-            }).catch(fail);
+            }).catch(fail).finally(() => { saveBtn.disabled = false; });
         }
 
         function renderPicker(focusId, focusControl) {
@@ -306,7 +308,13 @@
             children.push(actionRow([
                 button('编辑', () => openCollection(collection)),
                 button(collection.enabled ? '停用' : '启用', () => changeCollection(path, 'PUT', '组合状态已更新。', { enabled: !collection.enabled })),
-                button('复制链接', () => navigator.clipboard.writeText(url).then(() => show('链接已复制。')).catch(fail)),
+                button('复制链接', () => {
+                    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+                        show('当前环境不支持自动复制，请手动复制上方链接。', 'warning');
+                        return;
+                    }
+                    navigator.clipboard.writeText(url).then(() => show('链接已复制。')).catch(fail);
+                }),
                 button('预览节点', () => preview(path)),
                 button('重置链接', () => {
                     if (window.confirm('重置链接后旧链接将立即失效，确认继续？')) changeCollection(path + '/rotate-token', 'POST', '新链接已生成。');
@@ -331,6 +339,8 @@
         function saveCollection(event) {
             event.preventDefault();
             const id = byId('collection-id').value;
+            const saveBtn = byId('collection-save-btn');
+            saveBtn.disabled = true;
             api(pathFor('collections', id), id ? 'PUT' : 'POST', {
                 alias: byId('collection-alias').value,
                 sourceIds: selected.slice(),
@@ -341,7 +351,7 @@
             }).then(() => {
                 collectionForm.hidden = true;
                 return loadCollections();
-            }).then(() => show('组合已保存。')).catch(fail);
+            }).then(() => show('组合已保存。')).catch(fail).finally(() => { saveBtn.disabled = false; });
         }
 
         byId('tab-sources').addEventListener('click', () => switchTab('sources'));

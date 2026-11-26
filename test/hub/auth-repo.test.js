@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { Hono } from 'hono';
+
+vi.mock('ioredis', () => ({ default: class Redis {} }));
 import schema from '../../migrations/0001_hub_init.sql?raw';
 import { createApp } from '../../src/app/createApp.jsx';
 import { registerHub } from '../../src/hub/index.jsx';
@@ -11,10 +13,12 @@ import {
     parseCookies, REMEMBER_TTL_MS, SESSION_TTL_MS
 } from '../../src/hub/auth.js';
 import { createCloudflareRuntime } from '../../src/runtime/cloudflare.js';
+import { createNodeRuntime } from '../../src/runtime/node.js';
+import { createVercelRuntime } from '../../src/runtime/vercel.js';
 
 const password = 'test password';
 const origin = 'https://hub.example';
-const makePassword = () => hashPassword(password, { iterations: 10 });
+const makePassword = () => hashPassword(password, { iterations: 10000 });
 const applySchema = () => applyD1Migrations(env.HUB_DB, [{
     name: '0001_hub_init.sql', queries: schema.split(';').map(query => query.trim()).filter(Boolean)
 }]);
@@ -55,7 +59,7 @@ describe('Hub authentication', () => {
         expect(getClientIp(context({ 'X-Forwarded-For': 'first, second' }))).toBe('first');
         expect(getClientIp(context({}))).toBe('unknown');
         expect(parseCookies(' other=a=b; hub_session=token')).toMatchObject({ other: 'a=b', hub_session: 'token' });
-        for (const url of ['http://localhost:8787', 'http://127.0.0.1:8787']) {
+        for (const url of ['http://localhost:8787', 'http://127.0.0.1:8787', 'http://[::1]:8787']) {
             expect(buildSessionCookie('token', { maxAgeSeconds: 60, requestUrl: url })).not.toContain('; Secure');
         }
         expect(buildSessionCookie('token', { maxAgeSeconds: 60, requestUrl: origin })).toContain('; Secure');
@@ -106,7 +110,11 @@ describe('Hub HTTP routes', () => {
             expect(cookie).toContain(flag);
         }
         const headers = { Cookie: cookie.split(';')[0] };
-        expect((await app.request(origin + '/', { headers })).status).toBe(200);
+        const rootRes = await app.request(origin + '/', { headers });
+        expect(rootRes.status).toBe(200);
+        expect(rootRes.headers.get('Cache-Control')).toBe('private, no-store');
+        expect(rootRes.headers.get('Referrer-Policy')).toBe('no-referrer');
+        expect((await app.request(origin + '/shorten-v2?url=https://example.com', { headers })).status).toBe(405);
         for (const path of ['/shorten-v2', '/api/hub/logout']) {
             for (const extra of [{}, { Referer: 'malformed' }, { Origin: 'https://other.example' }, { Origin: origin, 'Sec-Fetch-Site': 'cross-site' }]) {
                 const res = await app.request(origin + path, { method: 'POST', headers: { ...headers, ...extra } });
@@ -141,6 +149,13 @@ describe('Hub HTTP routes', () => {
         expect(Number(throttled.headers.get('Retry-After'))).toBeGreaterThan(0);
         expect(Number(throttled.headers.get('Retry-After'))).toBeLessThanOrEqual(LOGIN_WINDOW_MS / 1000);
         expect((await loginRequest(app, { password }, { Origin: origin, 'CF-Connecting-IP': '192.0.2.10' })).status).toBe(200);
+        expect((await repo.getLoginRateLimit('192.0.2.10')).remaining).toBe(LOGIN_MAX_ATTEMPTS);
+
+        const concurrentResults = await Promise.all(
+            Array.from({ length: 7 }, () => loginRequest(app, { password: 'wrong' }, { Origin: origin, 'CF-Connecting-IP': '192.0.2.20' }))
+        );
+        const statuses = concurrentResults.map(res => res.status).sort((a, b) => a - b);
+        expect(statuses).toEqual([401, 401, 401, 401, 401, 429, 429]);
     });
 
     it('exposes only the public read routes and passes Hub context to mounted handlers', async () => {
@@ -185,6 +200,19 @@ describe('Hub HTTP routes', () => {
         const headers = { Cookie: res.headers.get('Set-Cookie').split(';')[0] };
         expect((await createApp(runtime).request(origin + '/', { headers })).status).toBe(200);
     });
+
+    it('forwards hub auth env vars in Node and Vercel runtimes and fails closed without DB', async () => {
+        const hash = await makePassword();
+        for (const rt of [
+            createNodeRuntime({ ADMIN_PASSWORD_HASH: hash, HUB_AUTH_REQUIRED: 'true', DISABLE_MEMORY_KV: 'true' }),
+            createVercelRuntime({ ADMIN_PASSWORD_HASH: hash, HUB_AUTH_REQUIRED: 'true' })
+        ]) {
+            const app = createApp(rt);
+            expect((await app.request(origin + '/')).status).toBe(503);
+            expect((await app.request(origin + '/admin')).status).toBe(503);
+            expect((await app.request(origin + '/clash')).status).toBe(503);
+        }
+    });
 });
 
 describe('Hub cryptography', () => {
@@ -214,11 +242,11 @@ describe('Hub cryptography', () => {
         expect(await verifyPassword(null, encoded)).toBe(false);
         const other = await makePassword();
         expect(other.split('$')[2]).not.toBe(encoded.split('$')[2]);
-        for (const invalid of [null, 'invalid', other + '$extra', other.replace('$10$', '$0$'), other.replace('$10$', '$100001$')]) {
+        for (const invalid of [null, 'invalid', other + '$extra', other.replace('$10000$', '$9999$'), other.replace('$10000$', '$100001$')]) {
             expect(await verifyPassword(password, invalid)).toBe(false);
         }
         await expect(hashPassword('')).rejects.toThrow();
-        for (const iterations of [0, 1.5, 100001]) {
+        for (const iterations of [0, 9999, 100001]) {
             await expect(hashPassword(password, { iterations })).rejects.toThrow();
         }
     });
@@ -268,20 +296,28 @@ describe.each(['memory', 'D1'])('%s Hub repository', backend => {
             nodes: [], nodeCount: 0, diagnostics: [], lastSuccessAt: null, lastAttemptAt: null
         });
         const patch = { alias: 'B', url: 'https://feed.example/2', enabled: false, requestUA: 'client', inputFormat: 'clash' };
-        expect(await repo.updateSource(s.id, patch)).toMatchObject(patch);
-        const payload = { nodes: [{ tag: 'one' }], droppedCount: 2, diagnostics: ['skipped'], attemptedAt: 100, expectedVersion: 0 };
+        const updated = await repo.updateSource(s.id, patch);
+        expect(updated).toMatchObject({ ...patch, cacheVersion: 1, lastSuccessAt: null });
+        const payload = { nodes: [{ tag: 'one' }], droppedCount: 2, diagnostics: ['skipped'], attemptedAt: 100, expectedVersion: updated.cacheVersion };
         const refreshed = await repo.saveSourceRefreshSuccess(s.id, payload);
-        expect(refreshed).toMatchObject({ updated: true, source: { status: 'ok', lastError: null, cacheVersion: 1, nodeCount: 1 } });
+        expect(refreshed).toMatchObject({ updated: true, source: { status: 'ok', lastError: null, cacheVersion: 2, nodeCount: 1 } });
+        if (backend === 'D1') {
+            const rawNodes = await env.HUB_DB.prepare('SELECT nodes_json FROM sources WHERE id = ?').bind(s.id).first();
+            expect(rawNodes.nodes_json).toMatch(/^enc:v1:/);
+        }
         expect(await repo.saveSourceRefreshSuccess(s.id, { ...payload, nodes: [] })).toEqual({ updated: false, conflict: true });
-        const failed = await repo.saveSourceRefreshFailure(s.id, { error: new Error('timeout'), attemptedAt: 200 });
+        // Stale failure with old expectedVersion must not clobber newer successful snapshot.
+        expect(await repo.saveSourceRefreshFailure(s.id, { error: 'stale error', attemptedAt: 150, expectedVersion: 1 })).toBeNull();
+        expect((await repo.getSource(s.id)).status).toBe('ok');
+        const failed = await repo.saveSourceRefreshFailure(s.id, { error: new Error('timeout'), attemptedAt: 200, expectedVersion: 2 });
         expect(failed).toMatchObject({
             nodes: payload.nodes, nodeCount: 1, droppedCount: 2, diagnostics: payload.diagnostics,
-            status: 'error', lastError: 'Error: timeout', lastAttemptAt: 200, lastSuccessAt: 100, cacheVersion: 1
+            status: 'error', lastError: 'Error: timeout', lastAttemptAt: 200, lastSuccessAt: 100, cacheVersion: 2
         });
         expect(await repo.listSources()).toEqual([failed]);
         expect(await repo.getSource(s.id)).toEqual(failed);
         expect(await repo.saveSourceRefreshSuccess(s.id, { nodes: [] })).toMatchObject({
-            updated: true, source: { status: 'ok', cacheVersion: 2, nodes: [], lastError: null }
+            updated: true, source: { status: 'ok', cacheVersion: 3, nodes: [], lastError: null }
         });
         expect(await repo.deleteSource(s.id)).toEqual({ deleted: true });
         expect(await repo.getSource(s.id)).toBeNull();

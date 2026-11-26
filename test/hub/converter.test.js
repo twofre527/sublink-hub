@@ -30,7 +30,9 @@ describe('upstream URLs', () => {
         'https://127.1.2.3', 'https://10.1.2.3', 'https://172.16.0.1', 'https://172.31.0.1',
         'https://192.168.1.1', 'https://169.254.42.1', 'https://100.64.0.1', 'https://100.127.0.1',
         'https://0.0.0.0', 'https://224.0.0.1', 'https://255.255.255.255',
-        'https://[::]', 'https://[::1]', 'https://[fc00::1]', 'https://[fd00::1]',
+        'https://[::]', 'https://[::1]', 'https://[::127.0.0.1]', 'https://[::10.0.0.1]',
+        'https://[64:ff9b::127.0.0.1]', 'https://[64:ff9b:1::10.0.0.1]', 'https://[fec0::1]', 'https://[100::1]',
+        'https://[fc00::1]', 'https://[fd00::1]',
         'https://[fe80::1]', 'https://[febf::1]', 'https://[ff02::1]', 'https://[::ffff:127.0.0.1]',
         'https://[::ffff:8.8.8.8]', 'https://2130706433', 'https://0x7f000001', 'https://0177.0.0.1',
         'https://134744072'
@@ -127,12 +129,22 @@ describe('subscription payloads', () => {
             detectedFormat: 'yaml',
             nodes: [
                 expect.objectContaining({ tag: '节点', tls: expect.objectContaining({ utls: { enabled: true, fingerprint: 'chrome' } }) }),
-                expect.objectContaining({ tag: 'Second', udp: false })
+                expect.objectContaining({ tag: 'Second', udp: false, tls: expect.objectContaining({ enabled: true }) })
             ],
             droppedCount: 1,
             diagnostics: ['YAML proxy 3: invalid port']
         });
         expect(await parseSubscriptionPayload(encodeURIComponent(clash))).toEqual(parsed);
+
+        const defaultTlsTrojan = yaml.dump({
+            proxies: [{ name: 'T-NoFlag', type: 'trojan', server: 't.example.com', port: 443, password: 'secret', sni: 'sni.example.com', 'skip-cert-verify': true }]
+        });
+        const trojanParsed = await parseSubscriptionPayload(defaultTlsTrojan);
+        expect(trojanParsed.nodes[0].tls).toMatchObject({ enabled: true, server_name: 'sni.example.com', insecure: true });
+        const trojanUri = nodeToShareUri(trojanParsed.nodes[0]).uri;
+        expect(trojanUri).toContain('security=tls');
+        expect(trojanUri).toContain('sni=sni.example.com');
+        expect(trojanUri).toContain('allowInsecure=1');
     });
 
     it.each(['', 'proxies: []\n', 'proxies: wrong\n'])('reports provider-only YAML with inline field %s', async inline => {
@@ -143,11 +155,23 @@ describe('subscription payloads', () => {
             });
     });
 
-    it('limits YAML aliases before parsing and rejects explicit custom tags', async () => {
+    it('limits YAML aliases without false-positiving on multiplier node names and rejects bombs/tags', async () => {
         const aliases = 'anchor: &entry 1\nproxies: [' + Array(51).fill('*entry').join(', ') + ']';
         await expect(parseSubscriptionPayload(aliases)).rejects.toThrow('YAML alias expansion limit exceeded');
+        const bombLines = ['a0: &a0 [1, 1]'];
+        for (let i = 1; i <= 18; i++) bombLines.push(`a${i}: &a${i} [*a${i - 1}, *a${i - 1}]`);
+        bombLines.push('proxies: [*a18]');
+        await expect(parseSubscriptionPayload(bombLines.join('\n'))).rejects.toThrow('YAML alias expansion limit exceeded');
+        await expect(parseSubscriptionPayload('a: &a [*a]\nproxies: []')).rejects.toThrow('YAML alias expansion limit exceeded');
         await expect(parseSubscriptionPayload('proxies: !<tag:example.com,2026:test> []')).rejects.toThrow('Custom YAML tags');
         await expect(parseSubscriptionPayload('proxies: !!js/function "private"')).rejects.toThrow('Custom YAML tags');
+
+        const multiplierYaml = yaml.dump({
+            proxies: Array.from({ length: 60 }, (_, idx) => ({
+                name: `HK ${idx + 1} *2x`, type: 'ss', server: 'ss.example.com', port: 443, cipher: 'aes-128-gcm', password: 'pw'
+            }))
+        });
+        expect((await parseSubscriptionPayload(multiplierYaml)).nodes).toHaveLength(60);
     });
 
     it('decodes Base64, unpadded Base64URL and nested URL encoding without changing raw URI fragments', async () => {
@@ -214,12 +238,35 @@ describe('subscription payloads', () => {
         await expect(parseSubscriptionPayload(payload)).resolves.toEqual({
             detectedFormat: 'surge',
             nodes: [expect.objectContaining({ tag: 'Test', type: 'shadowsocks', password: 'fixture-secret' })],
-            droppedCount: 3, diagnostics: [
-                'Surge line 6: unsupported or malformed proxy',
+            droppedCount: 2, diagnostics: [
                 'Surge line 7: unsupported or malformed proxy',
                 'Surge line 8: invalid connection fields'
             ]
         });
+    });
+
+    it('handles URI names with dns:/percent signs, caps diagnostics, and checks credentials', async () => {
+        const uriList = [
+            ssUri.replace('#Node', '#HK, dns:cloudflare'),
+            `vmess://${encodeBase64(JSON.stringify({ v: '2', ps: 'ignored', add: server, port: '443', id: uuid, aid: '0' }))}#HK 50% off`
+        ].join('\n');
+        const parsedUris = await parseSubscriptionPayload(uriList);
+        expect(parsedUris.detectedFormat).toBe('uri');
+        expect(parsedUris.nodes.map(n => n.tag)).toEqual(['HK, dns:cloudflare', 'HK 50% off']);
+
+        const manyInvalid = Array.from({ length: 60 }, (_, idx) => `bad-${idx}`).join('\n');
+        const capped = await parseSubscriptionPayload(manyInvalid, { inputFormat: 'uri' });
+        expect(capped.droppedCount).toBe(60);
+        expect(capped.diagnostics).toHaveLength(51);
+        expect(capped.diagnostics[50]).toBe('Additional diagnostics omitted');
+
+        const missingCreds = yaml.dump({
+            proxies: [
+                { name: 'NoPass', type: 'ss', server: 'a.example.com', port: 443, cipher: 'aes-128-gcm' },
+                { name: 'NoUuid', type: 'vless', server: 'b.example.com', port: 443 }
+            ]
+        });
+        expect((await parseSubscriptionPayload(missingCreds))).toMatchObject({ nodes: [], droppedCount: 2 });
     });
 
     it('applies the node limit to accepted nodes only', async () => {
@@ -273,9 +320,9 @@ describe('share URI output', () => {
         ['Shadowsocks obfs', ssUri.replace('#Node', '?plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dcover.example.com%3Bobfs-uri%3D%2Ftest#Node')],
         ['Shadowsocks v2ray-plugin', ssUri.replace('#Node', '?plugin=v2ray-plugin%3Bmode%3Dwebsocket%3Bhost%3Dcover.example.com%3Bpath%3D%2Ftest%3Btls#Node')],
         ['VMess WS', vmess({ net: 'ws', host: 'ws.example.com', path: '/ws' })],
-        ['VMess HTTP', vmess({ net: 'tcp', type: 'http', host: ['http.example.com'], path: ['/a', '/b'], method: 'POST', headers: { accept: ['text/plain'] } })],
+        ['VMess HTTP', vmess({ net: 'tcp', type: 'http', host: 'http.example.com', path: '/a', method: 'POST', headers: { accept: ['text/plain'] } })],
         ['VMess gRPC', vmess({ net: 'grpc', serviceName: 'service' })],
-        ['VMess H2', vmess({ net: 'h2', host: ['h2.example.com', 'alt.example.com'], path: '/h2' })],
+        ['VMess H2', vmess({ net: 'h2', host: 'h2.example.com', path: '/h2' })],
         ['VLESS IPv6 Reality xhttp', 'vless://' + uuid + '@[2606:4700::1111]:8443?' + reality + '&flow=xtls-rprx-vision&type=xhttp&host=cover.example.com&path=%2Fa&mode=stream-one&allowInsecure=1&encryption=example-encryption&udp=0#Asia'],
         ['Trojan Reality gRPC', 'trojan://p%40ss%3Fword@' + endpoint + '?' + reality + '&type=grpc&serviceName=test%2Fa&flow=sample&allowInsecure=1#Trojan'],
         ['Hysteria2', 'hysteria2://pass%23word@' + endpoint + '?sni=secure.example.com&insecure=1&obfs=salamander&obfs-password=mask%3Bvalue&mport=4000-4002%2C4443&hop-interval=30&up=13&down=42&alpn=h3%2Ch2&fast-open=1#Hy2'],
@@ -385,5 +432,58 @@ describe('output formats', () => {
         expect(decodeBase64(base64.body)).toBe(ssUri);
         expect(() => formatSubscriptionOutput([anytls], { target: 'surge' })).toThrow(InvalidConfigError);
         expect(() => formatSubscriptionOutput([], { target: 'base64' })).toThrow('No compatible proxy nodes for target base64');
+    });
+
+    it('supports cross-format Sing-Box/Surge/Base64 conversions, reserved names, and Surge sanitization', async () => {
+        expect(detectClientTarget('FlClash/0.8.0')).toBe('mihomo');
+        expect(detectClientTarget('ClashMetaForAndroid/2.11')).toBe('mihomo');
+        expect(detectClientTarget('SurgeMac/5.4.0')).toBe('surge');
+
+        const singboxInput = JSON.stringify({
+            outbounds: [
+                { type: 'hysteria2', tag: 'Hy2', server, server_port: 443, password: 'pw', server_ports: ['20000:20010'], up_mbps: 50, down_mbps: 100, hop_interval: '30s', tls: { enabled: true, alpn: ['h3'] } },
+                { type: 'anytls', tag: 'Any', server, server_port: 443, password: 'pw', idle_session_check_interval: '30s', idle_session_timeout: '1m', tls: { enabled: true, alpn: ['h2'] } }
+            ]
+        });
+        const parsedSb = await parseSubscriptionPayload(singboxInput);
+        const mihomoYaml = yaml.load(formatSubscriptionOutput(parsedSb.nodes, { target: 'mihomo' }).body);
+        expect(mihomoYaml.proxies[0]).toMatchObject({ ports: '20000-20010', up: 50, down: 100, 'hop-interval': 30, alpn: ['h3'] });
+        expect(mihomoYaml.proxies[1]).toMatchObject({ 'idle-session-check-interval': 30, 'idle-session-timeout': 60 });
+
+        const clashHybrid = yaml.dump({
+            proxies: [
+                { name: 'PROXY', type: 'hysteria2', server, port: 443, password: 'pw', up: '100 Mbps', down: '200 Mbps' },
+                { name: 'direct', type: 'tuic', server, port: 443, uuid, password: 'pw', 'zero-rtt': true, 'reduce-rtt': true },
+                { name: 'WS,Node=1', type: 'vmess', server, port: 443, uuid, alterId: 0, cipher: 'auto', tls: true, network: 'ws', 'ws-opts': { headers: { Host: 'ws.example.com' } }, alpn: ['h2', 'http/1.1'] },
+                { name: 'Injected', type: 'trojan', server, port: 443, password: 'pw\nRULE-SET,malicious' }
+            ]
+        });
+        const hybridNodes = (await parseSubscriptionPayload(clashHybrid)).nodes;
+        const sbOut = JSON.parse(formatSubscriptionOutput(hybridNodes.slice(0, 2), { target: 'singbox' }).body);
+        expect(sbOut.outbounds.map(o => o.tag)).toEqual(['PROXY', 'PROXY (Node)', 'direct (Node)', 'direct']);
+        expect(sbOut.outbounds[1]).toMatchObject({ up_mbps: 100, down_mbps: 200 });
+        expect(sbOut.outbounds[2]).toMatchObject({ zero_rtt_handshake: true });
+        expect(sbOut.outbounds[2]).not.toHaveProperty('zero_rtt');
+        expect(sbOut.outbounds[2]).not.toHaveProperty('reduce_rtt');
+
+        const surgeOut = formatSubscriptionOutput(hybridNodes.slice(2), { target: 'surge' });
+        expect(surgeOut.skippedCount).toBe(1);
+        expect(surgeOut.body).not.toContain('undefined');
+        expect(surgeOut.body).not.toContain('RULE-SET,malicious');
+        expect(surgeOut.body).toContain('WS Node 1 = vmess');
+        expect(surgeOut.body).toContain('ws-path=/');
+        expect(surgeOut.body).toContain('ws-headers=Host:ws.example.com');
+        expect(surgeOut.body).toContain('alpn=h2');
+        expect(surgeOut.body).not.toContain('alpn=h2,http/1.1');
+
+        const vmessH2 = {
+            tag: 'H2', type: 'vmess', server, server_port: 443, uuid,
+            transport: { type: 'h2', host: ['h2.example.com', 'alt.example.com'], path: ['/h2', '/alt'] },
+            tls: { enabled: true, alpn: ['h2'] }
+        };
+        const vmessJson = JSON.parse(decodeBase64(nodeToShareUri(vmessH2).uri.slice('vmess://'.length)));
+        expect(typeof vmessJson.host).toBe('string');
+        expect(typeof vmessJson.path).toBe('string');
+        expect(vmessJson).toMatchObject({ host: 'h2.example.com,alt.example.com', path: '/h2', alpn: 'h2' });
     });
 });
