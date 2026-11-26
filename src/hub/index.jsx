@@ -2,6 +2,8 @@
 /** @jsxImportSource hono/jsx */
 import { createFieldCipher } from './crypto.js';
 import { createD1HubRepo } from './repo.js';
+import { createSourceRefresher, mountHubApiRoutes } from './routes/api.js';
+import { mountSubRoutes } from './routes/sub.js';
 import {
     applyHubSecurityHeaders, buildClearSessionCookie, buildSessionCookie, createAuthService,
     getClientIp, getSessionTokenFromRequest, verifySameOrigin
@@ -25,6 +27,7 @@ export function registerHub(app, runtime, routeMounters = {}) {
     const repo = config?.repo ?? (config?.db ? createD1HubRepo(config.db, { cipher }) : null);
     const adminPasswordHash = config?.adminPasswordHash || null;
     const auth = repo && adminPasswordHash ? createAuthService({ repo, adminPasswordHash }) : null;
+    const refresher = repo ? createSourceRefresher({ repo, fetchImpl: config?.fetchImpl }) : undefined;
 
     app.use('*', async (c, next) => {
         c.set('hub', { repo, auth, cipher, config, adminPasswordHash });
@@ -101,7 +104,7 @@ export function registerHub(app, runtime, routeMounters = {}) {
         return c.json({ ok: true });
     });
 
-    routeMounters.mountApiRoutes?.(app);
-    routeMounters.mountSubRoutes?.(app);
+    (routeMounters.mountApiRoutes ?? (a => mountHubApiRoutes(a, { refresher })))(app);
+    (routeMounters.mountSubRoutes ?? (a => mountSubRoutes(a, { refresher })))(app);
     routeMounters.mountPageRoutes?.(app);
 }
