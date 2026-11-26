@@ -39,6 +39,7 @@ async function expectSecurePage(response) {
     const html = await response.text();
     expect(html).toContain('<meta name="robots" content="noindex, nofollow"');
     expect(html.match(/<(?:link|script)\b[^>]*>/gi)).toEqual([
+        expect.stringMatching(/^<link rel="icon" type="image\/x-icon" href="\/favicon\.ico"\s*\/?>$/),
         expect.stringMatching(/^<link rel="stylesheet" href="\/hub\.css"\s*\/?>$/),
         expect.stringMatching(/^<script defer(?:="")? src="\/hub\.js">$/)
     ]);

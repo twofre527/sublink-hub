@@ -13,6 +13,7 @@ function Page({ title, page, children }) {
             <meta name="viewport" content="width=device-width, initial-scale=1" />
             <meta name="robots" content="noindex, nofollow" />
             <title>{title}</title>
+            <link rel="icon" type="image/x-icon" href="/favicon.ico" />
             <link rel="stylesheet" href="/hub.css" />
             <script defer src="/hub.js"></script>
         </head>
@@ -21,9 +22,9 @@ function Page({ title, page, children }) {
 }
 
 function LoginPage({ configured }) {
-    return <Page title="Subscription Hub - 登录" page="login">
+    return <Page title="Sublink Hub - 登录" page="login">
         <main class="card login-card">
-            <h1>Subscription Hub</h1>
+            <h1>Sublink Hub</h1>
             <p class="muted">管理员登录</p>
             {!configured && <p class="notice error" role="alert">未配置 ADMIN_PASSWORD_HASH 或 HUB_DB，无法登录</p>}
             <form id="login-form" method="post" action="/api/hub/login">
@@ -115,10 +116,10 @@ function PreviewModal() {
 }
 
 function AdminPage() {
-    return <Page title="Subscription Hub - 管理" page="admin">
+    return <Page title="Sublink Hub - 管理" page="admin">
         <header class="topbar">
             <div class="shell topbar-content">
-                <strong class="brand">Subscription Hub</strong>
+                <strong class="brand">Sublink Hub</strong>
                 <nav class="tabs" aria-label="管理面板">
                     <button id="tab-sources" type="button" aria-controls="panel-sources" aria-pressed="true">订阅源</button>
                     <button id="tab-collections" type="button" aria-controls="panel-collections" aria-pressed="false">组合列表</button>

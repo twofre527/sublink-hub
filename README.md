@@ -1,127 +1,97 @@
 <div align="center">
-  <img src="public/favicon.png" alt="Sublink Worker" width="120" height="120"/>
+  <img src="public/favicon.png" alt="Sublink Hub" width="112" height="112"/>
 
-  <h1><b>Sublink Worker</b></h1>
-  <h5><i>One Worker, All Subscriptions</i></h5>
-
-  <p><b>A lightweight subscription converter and manager for proxy protocols, deployable on Cloudflare Workers, Vercel, Node.js, or Docker.</b></p>
-
-  <a href="https://trendshift.io/repositories/12291" target="_blank">
-    <img src="https://trendshift.io/api/badge/repositories/12291" alt="7Sageer%2Fsublink-worker | Trendshift" width="250" height="55"/>
-  </a>
-
-  <br>
-
-<p style="display: flex; align-items: center; gap: 10px;">
-  <a href="https://deploy.workers.cloudflare.com/?url=https://github.com/7Sageer/sublink-worker">
-    <img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare Workers" style="height: 32px;"/>
-  </a>
-  <a href="https://vercel.com/new/clone?repository-url=https://github.com/7Sageer/sublink-worker&env=KV_REST_API_URL,KV_REST_API_TOKEN&envDescription=Vercel%20KV%20credentials%20for%20data%20storage&envLink=https://vercel.com/docs/storage/vercel-kv">
-    <img src="https://vercel.com/button" alt="Deploy to Vercel" style="height: 32px;"/>
-  </a>
-</p>
-
-  <h3>📚 Documentation</h3>
-  <p>
-    <a href="https://app.sublink.works"><b>⚡ Live Demo</b></a> ·
-    <a href="https://sublink.works/en/"><b>Documentation</b></a> 
-    <a href="https://sublink.works"><b>中文文档</b></a>·
-  </p>
-  <p>
-    <a href="https://sublink.works/guide/quick-start/">Quick Start</a> ·
-    <a href="https://sublink.works/api/">API Reference</a> ·
-    <a href="https://sublink.works/guide/faq/">FAQ</a>
-  </p>
+  <h1><b>Sublink Hub</b></h1>
+  <p><b>轻量级多源订阅聚合与自适应分发服务（基于 Cloudflare Workers + D1）</b></p>
 </div>
 
-## Subscription Hub (Cloudflare Workers + D1)
+## 项目简介
 
-Manage multiple upstream subscriptions by alias, refresh and preview nodes, and merge sources in a chosen order with optional alias prefixes and deduplication. Each collection has a tokenized subscription URL. Output follows the client User-Agent by default and supports Mihomo YAML, Mihomo Provider, Base64 URI lists, Sing-Box JSON, and Surge INI. The management UI uses a single administrator password.
+**Sublink Hub** 基于开源项目 [sublink-worker](https://github.com/7Sageer/sublink-worker) 增强改造，专为个人使用场景设计：云端集中维护多个上游订阅源与组合策略，通过独立的专有链接按客户端自动下发适配格式，免去手动拼装与反复转换订阅的繁琐。
 
-### Deploy on Cloudflare Workers
+### 核心增强特性
 
-1. Run `npx wrangler d1 create sublink-hub`. Copy the returned `database_id` into the `HUB_DB` entry in `wrangler.toml`.
-2. Apply the database migrations: `npx wrangler d1 migrations apply sublink-hub --remote`.
-3. Run `node scripts/hash-password.mjs`, enter the admin password, and paste the output when prompted by `npx wrangler secret put ADMIN_PASSWORD_HASH`.
-4. Optional, before adding subscriptions: run `node scripts/hash-password.mjs --gen-key` and paste the output when prompted by `npx wrangler secret put DATA_ENCRYPTION_KEY`. Keep the same key to read encrypted data across deployments.
-5. Deploy with `npx wrangler deploy`. To serve the management assets through the Worker's MIME and `nosniff` handling, use the following `[assets]` settings in `wrangler.toml` before deploying:
+- **多订阅源集中管理**：支持添加多个上游订阅链接并设置自定义别名，默认遮蔽真实订阅 URL，支持手动刷新、失败保留旧缓存与脱敏节点预览。
+- **自定义组合与合并去重**：支持自由勾选并排序多个订阅源合并为独立列表，自动添加来源别名前缀与重名后缀，并基于完整连接参数指纹智能去重。
+- **专有链接隔离分发**：可创建多个不同组合的订阅列表，各自拥有高强度随机专有链接（`/sub/<token>`），支持一键复制与即时重置/停用。
+- **多格式统一解析与转换**：自动兼容 Clash YAML、Base64、URI 列表、Sing-Box JSON、Surge INI 等上游输入，统一转为内部节点模型后按需输出。
+- **客户端自适应下发**：自动识别下游客户端 `User-Agent`（Clash / Mihomo、Shadowrocket / v2rayN、Sing-Box、Surge），同时支持 `?target=` 与 `?mode=provider` 显式指定输出格式。
+- **安全与防泄露**：单管理员登录认证（PBKDF2 + HttpOnly Cookie + 登录限流）、可选字段级 AES-GCM 加密存储、严格同源校验及防缓存响应头，避免订阅链接与节点凭据泄露。
 
-   ```toml
-   [assets]
-   directory = "./public"
-   binding = "ASSETS"
-   run_worker_first = ["/hub.css", "/hub.js"]
-   ```
+---
 
-### Routes and client setup
+## 快速部署（Cloudflare Workers + D1）
 
-| Route | Purpose |
+只需 **Cloudflare Workers + D1**（Free 套餐即可运行），无需 Node 运行时服务器、Redis 或外部数据库。
+
+### 1. 安装依赖
+
+```bash
+npm install
+```
+
+### 2. 创建并初始化 D1 数据库
+
+```bash
+# 创建 D1 数据库，将返回的 database_id 填入 wrangler.toml 的 HUB_DB
+npx wrangler d1 create sublink-hub
+
+# 执行建表迁移
+npx wrangler d1 migrations apply sublink-hub --remote
+```
+
+### 3. 配置管理员密码与加密密钥
+
+```bash
+# 必填：设置管理员登录密码（按提示输入密码）
+node scripts/hash-password.mjs | npx wrangler secret put ADMIN_PASSWORD_HASH
+
+# 推荐（可选）：生成 32 字节密钥，加密存储 D1 中的上游链接、节点缓存与订阅 Token
+node scripts/hash-password.mjs --gen-key | npx wrangler secret put DATA_ENCRYPTION_KEY
+```
+
+> 请勿在开始添加订阅源后随意更换 `DATA_ENCRYPTION_KEY`，否则已加密的历史数据将无法解密。
+
+### 4. 部署上线
+
+```bash
+npx wrangler deploy
+```
+
+---
+
+## 路由与客户端使用
+
+| 路径 | 用途 |
 | --- | --- |
-| `/login` | Administrator sign-in |
-| `/admin` | Manage subscription sources and collections |
-| `/sub/<token>` | Fetch a collection; the token grants access |
-| `/sub/<token>?target=…` | Choose `mihomo`, `base64`, `singbox`, or `surge` explicitly |
-| `/sub/<token>?target=mihomo&mode=provider` | Fetch Mihomo proxy-provider YAML |
+| `/login` | 管理员登录页 |
+| `/admin` | 订阅源管理、组合列表编排与节点预览后台 |
+| `/sub/<token>` | 专有订阅链接（按客户端 `User-Agent` 自动识别输出格式） |
+| `/sub/<token>?target=<format>` | 显式指定输出格式：`mihomo`、`base64`、`singbox`、`surge` |
+| `/sub/<token>?target=mihomo&mode=provider` | 仅输出 `proxies` 列表，供 Mihomo `proxy-providers` 使用 |
 
-For Clash Verge Rev, import the `?target=mihomo` URL as a remote profile and apply your extension script locally. Read the Hub nodes from `config.proxies` and define DNS, TUN, groups, and routing in your local script.
+### 配合 Clash Verge Rev 扩展脚本
 
-**Password reset:** Repeat step 3 with the new password. To revoke existing admin sessions immediately, run `npx wrangler d1 execute sublink-hub --remote --command "DELETE FROM sessions;"`.
+1. 在管理后台复制组合列表的 `?target=mihomo` 链接并导入 Clash Verge Rev。
+2. 服务端下发最小可用配置（仅包含节点列表 `proxies` 与基础 `PROXY` 组），DNS、TUN、策略组与分流规则全部交由本地扩展脚本读取 `config.proxies` 独立接管。
 
-**Worker rollback:** Use `npx wrangler rollback` to select a compatible earlier Worker version. D1 migrations and stored subscriptions remain in place; retain the same D1 binding and encryption key.
+---
 
-## 🚀 Quick Start
+## 运维与安全说明
 
-### One-Click Deployment
-- Choose a "deploy" button above to click
-- That's it! See the [Document](https://sublink.works/guide/quick-start/) for more information.
+- **重置管理员密码**：重新执行 `node scripts/hash-password.mjs | npx wrangler secret put ADMIN_PASSWORD_HASH`；如需立即踢出已有登录会话，执行：
+  ```bash
+  npx wrangler d1 execute sublink-hub --remote --command "DELETE FROM sessions;"
+  ```
+- **版本回滚**：使用 `npx wrangler rollback` 回退 Worker 版本；D1 数据与迁移保持不变。
+- **本地开发与测试**：
+  ```bash
+  npm test
+  ```
 
-### Alternative Runtimes
-- **Node.js**: `npm run build:node && node dist/node-server.cjs`
-- **Vercel**: `vercel deploy` (configure KV in project settings)
-- **Docker**: `docker pull ghcr.io/7sageer/sublink-worker:latest`
-- **Docker Compose**: `docker compose up -d` (includes Redis)
+---
 
-## ✨ Features
+## 致谢与协议
 
-### Supported Protocols
-ShadowSocks • VMess • VLESS • Hysteria2 • Trojan • TUIC
-
-### Client Support
-Sing-Box • Clash • Xray/V2Ray • Surge
-
-### Input Support
-- Base64 subscriptions
-- HTTP/HTTPS subscriptions
-- Full configs (Sing-Box JSON, Clash YAML, Surge INI)
-
-### Core Capabilities
-- Import subscriptions from multiple sources
-- Generate fixed/random short links (KV-based)
-- Light/Dark theme toggle
-- Flexible API for script automation
-- Multi-language support (Chinese, English, Persian, Russian)
-- Web interface with predefined rule sets and customizable policy groups
-
-## 🤝 Contributing
-
-Issues and Pull Requests are welcome to improve this project.
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## ⚠️ Disclaimer
-
-This project is for learning and exchange purposes only. Please do not use it for illegal purposes. All consequences resulting from the use of this project are solely the responsibility of the user and are not related to the developer.
-
-## ⭐ Star History
-
-Thanks to everyone who has starred this project! 🌟
-
-<a href="https://star-history.com/#7Sageer/sublink-worker&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=7Sageer/sublink-worker&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=7Sageer/sublink-worker&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=7Sageer/sublink-worker&type=Date" />
- </picture>
-</a>
+- 本项目基于 [7Sageer/sublink-worker](https://github.com/7Sageer/sublink-worker) 开发，保留原转换解析核心与运行时架构。
+- 遵循 [MIT License](LICENSE) 开源协议。本项目仅用于学习与技术交流，请遵守当地法律法规。
