@@ -34,6 +34,41 @@
   </p>
 </div>
 
+## Subscription Hub (Cloudflare Workers + D1)
+
+Manage multiple upstream subscriptions by alias, refresh and preview nodes, and merge sources in a chosen order with optional alias prefixes and deduplication. Each collection has a tokenized subscription URL. Output follows the client User-Agent by default and supports Mihomo YAML, Mihomo Provider, Base64 URI lists, Sing-Box JSON, and Surge INI. The management UI uses a single administrator password.
+
+### Deploy on Cloudflare Workers
+
+1. Run `npx wrangler d1 create sublink-hub`. Copy the returned `database_id` into the `HUB_DB` entry in `wrangler.toml`.
+2. Apply the database migrations: `npx wrangler d1 migrations apply sublink-hub --remote`.
+3. Run `node scripts/hash-password.mjs`, enter the admin password, and paste the output when prompted by `npx wrangler secret put ADMIN_PASSWORD_HASH`.
+4. Optional, before adding subscriptions: run `node scripts/hash-password.mjs --gen-key` and paste the output when prompted by `npx wrangler secret put DATA_ENCRYPTION_KEY`. Keep the same key to read encrypted data across deployments.
+5. Deploy with `npx wrangler deploy`. To serve the management assets through the Worker's MIME and `nosniff` handling, use the following `[assets]` settings in `wrangler.toml` before deploying:
+
+   ```toml
+   [assets]
+   directory = "./public"
+   binding = "ASSETS"
+   run_worker_first = ["/hub.css", "/hub.js"]
+   ```
+
+### Routes and client setup
+
+| Route | Purpose |
+| --- | --- |
+| `/login` | Administrator sign-in |
+| `/admin` | Manage subscription sources and collections |
+| `/sub/<token>` | Fetch a collection; the token grants access |
+| `/sub/<token>?target=…` | Choose `mihomo`, `base64`, `singbox`, or `surge` explicitly |
+| `/sub/<token>?target=mihomo&mode=provider` | Fetch Mihomo proxy-provider YAML |
+
+For Clash Verge Rev, import the `?target=mihomo` URL as a remote profile and apply your extension script locally. Read the Hub nodes from `config.proxies` and define DNS, TUN, groups, and routing in your local script.
+
+**Password reset:** Repeat step 3 with the new password. To revoke existing admin sessions immediately, run `npx wrangler d1 execute sublink-hub --remote --command "DELETE FROM sessions;"`.
+
+**Worker rollback:** Use `npx wrangler rollback` to select a compatible earlier Worker version. D1 migrations and stored subscriptions remain in place; retain the same D1 binding and encryption key.
+
 ## 🚀 Quick Start
 
 ### One-Click Deployment

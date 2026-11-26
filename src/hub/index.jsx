@@ -3,6 +3,7 @@
 import { createFieldCipher } from './crypto.js';
 import { createD1HubRepo } from './repo.js';
 import { createSourceRefresher, mountHubApiRoutes } from './routes/api.js';
+import { mountHubPageRoutes } from './routes/pages.jsx';
 import { mountSubRoutes } from './routes/sub.js';
 import {
     applyHubSecurityHeaders, buildClearSessionCookie, buildSessionCookie, createAuthService,
@@ -106,5 +107,5 @@ export function registerHub(app, runtime, routeMounters = {}) {
 
     (routeMounters.mountApiRoutes ?? (a => mountHubApiRoutes(a, { refresher })))(app);
     (routeMounters.mountSubRoutes ?? (a => mountSubRoutes(a, { refresher })))(app);
-    routeMounters.mountPageRoutes?.(app);
+    (routeMounters.mountPageRoutes ?? mountHubPageRoutes)(app);
 }
